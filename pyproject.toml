@@ -1,0 +1,90 @@
+[project]
+name = "itsm-insights"
+version = "0.1.0"
+description = "ITSM ticket analytics: designation clustering, lifecycle stats, classification / sentiment / weak-signal models, served over FastAPI."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "Diametral" }]
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "scikit-learn>=1.5",
+    "scipy>=1.13",
+    "joblib>=1.4",
+    "typer>=0.15",
+    "rich>=13.9",
+    "pyarrow>=17.0",
+    "streamlit>=1.40",
+    "altair>=5.4",
+    "umap-learn>=0.5.7",
+    "hdbscan>=0.8.39",
+]
+
+[project.optional-dependencies]
+# Transformer backends. Optional on purpose: every default code path is
+# CPU-only, offline and scikit-learn based (see docs/03-modeling.md).
+hf = [
+    "sentence-transformers>=3.3",
+    "transformers>=4.46",
+    "torch>=2.4",
+]
+# Public dataset adapters (Hugging Face Hub / UCI archives).
+datasets = ["datasets>=3.1", "requests>=2.32"]
+
+[project.scripts]
+itsm = "itsm.cli:app"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-cov>=6.0",
+    "httpx>=0.27",
+    "ruff>=0.8",
+    "mypy>=1.13",
+    "watchdog>=5.0",
+    "jupyter>=1.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/itsm"]
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF", "D"]
+ignore = ["D107", "D203", "D213", "RUF001"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["D"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.mypy]
+# No python_version pin: mypy follows the interpreter it runs under, which
+# keeps it compatible with the typeshed bundled with the installed numpy.
+packages = ["itsm"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = ["slow: needs optional heavy dependencies (transformers, hdbscan)"]

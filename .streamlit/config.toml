@@ -1,0 +1,14 @@
+[server]
+# WSL's polling-based watcher is slow; use watchdog (requires the `watchdog`
+# package — see pyproject.toml dev dependencies).
+fileWatcherType = "watchdog"
+
+[theme]
+# Thales brand colors, taken from the logo SVG on thalesgroup.com:
+# dark navy (.logoSt2) + cyan/turquoise (.logoSt1 / .logoSt4).
+base = "light"
+primaryColor = "#5EBFD4"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F4F8"
+textColor = "#2C2F73"
+font = "sans serif"
