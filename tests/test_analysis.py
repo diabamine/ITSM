@@ -16,6 +16,7 @@ from itsm.analysis.lifecycle import (
     kpis_by,
     rework_profile,
     state_transitions,
+    volume_timeline,
 )
 from itsm.text.normalize import normalize_text, tokenize
 
@@ -133,3 +134,14 @@ def test_followed_ticket_returns_a_timeline(tickets: pd.DataFrame, events: pd.Da
 
     with pytest.raises(KeyError):
         followed_ticket(tickets, events, "does-not-exist")
+
+
+@pytest.mark.parametrize("freq", ["D", "W", "ME", "M"])
+def test_aggregations_accept_resample_aliases(tickets: pd.DataFrame, freq: str) -> None:
+    """Monthly granularity must work through the resample alias.
+
+    pandas 2.2 renamed the resample aliases (``M`` -> ``ME``) but ``Period``
+    still only accepts the old ones, so a UI offering "ME" used to crash here.
+    """
+    assert len(volume_timeline(tickets, freq=freq)) > 0
+    assert len(backlog_timeline(tickets, freq=freq)) > 0

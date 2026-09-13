@@ -68,7 +68,6 @@ def render() -> None:
 
     st.dataframe(
         frame,
-        use_container_width=True,
         hide_index=True,
         column_config={
             "share": st.column_config.ProgressColumn(
@@ -122,4 +121,4 @@ def render() -> None:
         )
         merged = contingency.merge(counts, on=["cluster", "category"])
         merged = merged[merged["share"] > 0.01]
-        st.altair_chart(charts.purity_heatmap(merged), use_container_width=True)
+        st.plotly_chart(charts.purity_heatmap(merged))

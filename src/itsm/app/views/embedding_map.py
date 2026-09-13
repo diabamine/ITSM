@@ -35,6 +35,9 @@ def _plot_frame(frame: pd.DataFrame, projection: EmbeddingMap) -> pd.DataFrame:
     plot["y"] = projection.coords[:, 1]
     plot["membership"] = projection.probabilities.round(3)
     plot["cluster"] = [_cluster_label(c, projection.cluster_names) for c in projection.labels]
+    # Plotly hover boxes do not wrap: a full designation would stretch the
+    # tooltip across the screen.
+    plot["title"] = plot["designation"].astype(str).str.slice(0, 70)
     return plot
 
 
@@ -133,16 +136,20 @@ def render() -> None:
     color = st.selectbox("Color by", color_options)
     noise_value = "noise" if color == "cluster" else None
     scale = charts.categorical_scale(plot[color].astype(str), noise_value=noise_value)
-    tooltip = [
-        "designation:N",
-        "category:N",
-        "cluster:N",
-        "membership:Q",
-        *(f"{c}:N" for c in _COLOR_CANDIDATES if c in plot.columns and c != color),
+    hover_columns = [
+        "title",
+        "category",
+        "cluster",
+        "membership",
+        *(c for c in _COLOR_CANDIDATES if c in plot.columns and c != color),
     ]
-    st.altair_chart(
-        charts.embedding_scatter(plot, color=color, color_scale=scale, tooltip=tooltip),
-        use_container_width=True,
+    st.plotly_chart(
+        charts.embedding_scatter(plot, color=color, color_map=scale, hover_columns=hover_columns),
+        key=f"map-{color}",
+    )
+    st.caption(
+        "Hover a point for the ticket, drag to zoom, double-click to reset, and click a "
+        "legend entry to hide that group (double-click to isolate it)."
     )
 
     st.divider()
@@ -198,13 +205,12 @@ def render() -> None:
         )
         merged = contingency.merge(counts, on=["cluster", "category"])
         merged = merged[merged["share"] > 0.01]
-        st.altair_chart(charts.purity_heatmap(merged), use_container_width=True)
+        st.plotly_chart(charts.purity_heatmap(merged))
 
     st.divider()
     st.subheader("Cluster summary")
     st.dataframe(
         summary[["cluster", "tickets", "share", "dominant_category", "purity"]],
-        use_container_width=True,
         hide_index=True,
         column_config={
             "share": st.column_config.ProgressColumn(

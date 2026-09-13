@@ -87,7 +87,7 @@ def _render_results(designation: str, description: str, declared_category: str |
             )
     with right:
         probabilities = pd.DataFrame(prediction.alternatives, columns=["label", "score"])
-        st.altair_chart(charts.probability_bars(probabilities), use_container_width=True)
+        st.plotly_chart(charts.probability_bars(probabilities), key="class-probabilities")
 
     st.divider()
     mood_column, family_column = st.columns(2)
@@ -137,7 +137,6 @@ def _render_results(designation: str, description: str, declared_category: str |
     neighbours = state.similar_tickets(designation, k=5)
     st.dataframe(
         neighbours,
-        use_container_width=True,
         hide_index=True,
         column_config={
             "similarity": st.column_config.ProgressColumn(
@@ -203,9 +202,7 @@ def render() -> None:
             value=2,
             format_func=lambda v: {1: "High", 2: "Medium", 3: "Low"}[v],
         )
-        submitted = st.form_submit_button(
-            "Analyse ticket", type="primary", use_container_width=True
-        )
+        submitted = st.form_submit_button("Analyse ticket", type="primary", width="stretch")
 
     if not submitted:
         return

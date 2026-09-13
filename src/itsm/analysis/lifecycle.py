@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from itsm.data.schema import TERMINAL_STATES, TicketState
+from itsm.timeutils import period_freq
 
 #: Age buckets (in days) used to age the open backlog.
 AGING_BUCKETS = (1, 3, 7, 14, 30, 90)
@@ -121,7 +122,9 @@ def volume_timeline(tickets: pd.DataFrame, freq: str = "D", by: str | None = Non
     Returns:
         Long-format frame with columns ``period``, [``by``], ``tickets``.
     """
-    frame = tickets.assign(period=pd.to_datetime(tickets["opened_at"]).dt.to_period(freq))
+    frame = tickets.assign(
+        period=pd.to_datetime(tickets["opened_at"]).dt.to_period(period_freq(freq))
+    )
     keys = ["period"] + ([by] if by else [])
     out = frame.groupby(keys, dropna=False).size().rename("tickets").reset_index()
     out["period"] = out["period"].dt.to_timestamp()
@@ -134,13 +137,14 @@ def backlog_timeline(tickets: pd.DataFrame, freq: str = "W") -> pd.DataFrame:
     The backlog is the cumulative difference between arrivals and departures,
     which is the quantity a capacity plan actually tracks.
     """
+    alias = period_freq(freq)
     opened = (
-        pd.to_datetime(tickets["opened_at"]).dt.to_period(freq).value_counts().rename("created")
+        pd.to_datetime(tickets["opened_at"]).dt.to_period(alias).value_counts().rename("created")
     )
     resolved = (
         pd.to_datetime(tickets["resolved_at"])
         .dropna()
-        .dt.to_period(freq)
+        .dt.to_period(alias)
         .value_counts()
         .rename("resolved")
     )

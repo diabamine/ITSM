@@ -1,226 +1,364 @@
-"""Altair chart builders.
+"""Plotly figure builders.
 
-Altair ships with Streamlit, so no extra dependency. Charts are built as
-functions returning a chart object rather than drawn in place: they stay
-testable and reusable across pages.
+Plotly rather than a static renderer because these charts are read by someone
+looking for an explanation, not an illustration: hovering a day gives the exact
+observed/expected pair, the legend toggles a series off, the time axis zooms and
+pans, and a spike can be clicked to pull up the tickets behind it.
 
-Two conventions:
+Two conventions hold across the module:
 
-* a **diverging** scale only where a sign is meaningful (sentiment, residuals);
-* every anomaly chart shows the **expected band next to the observed line** -
-  an alert without its baseline is not actionable.
+* **Builders are pure.** They take dataframes, return a ``go.Figure`` and never
+  call ``st.*`` - so they stay reusable, unit-testable, and the page decides how
+  to display them.
+* **Every anomaly chart shows the expected baseline - and, where the scale is
+  known, the alert band - next to the observed line.** An alert without the
+  baseline it departed from is not actionable.
 """
 
 from __future__ import annotations
 
-import altair as alt
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 COLOR_OBSERVED = "#2563eb"
 COLOR_EXPECTED = "#94a3b8"
+COLOR_RESOLVED = "#10b981"
 COLOR_ALERT = "#dc2626"
 COLOR_EMERGING = "#f59e0b"
-COLOR_NOISE = "#9aa1ac"
+#: Points HDBSCAN refused to assign. Deliberately the dullest colour on the
+#: page: noise must be visible without competing with the real clusters.
+COLOR_NOISE = "#cbd5e1"
 
-#: Tableau 20 - enough distinguishable hues for a couple dozen HDBSCAN clusters.
-TABLEAU20 = [
-    "#4E79A7", "#A0CBE8", "#F28E2B", "#FFBE7D", "#59A14F", "#8CD17D",
-    "#B6992D", "#F1CE63", "#499894", "#86BCB6", "#E15759", "#FF9D9A",
-    "#79706E", "#BAB0AC", "#D37295", "#FABFD2", "#B07AA1", "#D4A6C8",
-    "#9D7660", "#D7B5A6",
-]  # fmt: skip
+#: Qualitative palette for categorical colouring, long enough for ~30 clusters.
+_QUALITATIVE = (*px.colors.qualitative.Set2, *px.colors.qualitative.Dark24)
+
+#: Applied to every figure: tight margins, legend on top, full hover labels.
+_LAYOUT: dict[str, object] = {
+    "margin": {"l": 10, "r": 10, "t": 40, "b": 10},
+    "legend": {"orientation": "h", "yanchor": "bottom", "y": 1.02, "x": 0, "title": None},
+    "hoverlabel": {"namelength": -1},
+}
+
+
+def _style(figure: go.Figure, height: int = 300, unified_hover: bool = True) -> go.Figure:
+    """Apply the shared layout to a figure."""
+    figure.update_layout(height=height, **_LAYOUT)
+    if unified_hover:
+        figure.update_layout(hovermode="x unified")
+    return figure
+
+
+def _time_controls(figure: go.Figure, slider: bool = False) -> go.Figure:
+    """Add zoom presets - and optionally a range slider - to a time axis.
+
+    A year of daily points does not fit a screen legibly. The presets are how a
+    reader goes from "the whole year" to "the week of the incident" without
+    leaving the page.
+    """
+    figure.update_xaxes(
+        rangeselector={
+            "buttons": [
+                {"count": 1, "label": "1m", "step": "month", "stepmode": "backward"},
+                {"count": 3, "label": "3m", "step": "month", "stepmode": "backward"},
+                {"count": 6, "label": "6m", "step": "month", "stepmode": "backward"},
+                {"step": "all", "label": "all"},
+            ],
+            "y": 1.06,
+            "yanchor": "bottom",
+            "bgcolor": "rgba(148,163,184,0.15)",
+        },
+        rangeslider={"visible": slider, "thickness": 0.08},
+    )
+    return figure
 
 
 def volume_line(
     frame: pd.DataFrame, x: str = "period", y: str = "tickets", color: str | None = None
-) -> alt.Chart:
-    """Ticket volume over time, optionally split by a dimension."""
-    encoding: dict[str, object] = {
-        "x": alt.X(f"{x}:T", title=None),
-        "y": alt.Y(f"{y}:Q", title="tickets"),
-        "tooltip": [alt.Tooltip(f"{x}:T"), alt.Tooltip(f"{y}:Q")],
-    }
-    if color:
-        encoding["color"] = alt.Color(f"{color}:N", title=None)
-    return alt.Chart(frame).mark_line(point=False).encode(**encoding).properties(height=280)
+) -> go.Figure:
+    """Ticket volume over time, optionally split by a dimension.
+
+    With a ``color`` split the legend doubles as a filter: click one family to
+    hide it, double-click to isolate it.
+    """
+    figure = px.line(frame, x=x, y=y, color=color, markers=len(frame) < 60)
+    figure.update_traces(hovertemplate="%{y} tickets<extra>%{fullData.name}</extra>")
+    figure.update_yaxes(title="tickets", rangemode="tozero")
+    figure.update_xaxes(title=None)
+    return _time_controls(_style(figure, height=300))
 
 
 def category_bars(
     frame: pd.DataFrame, value: str = "tickets", label: str = "category"
-) -> alt.Chart:
+) -> go.Figure:
     """Horizontal ranking of a value by category."""
-    return (
-        alt.Chart(frame)
-        .mark_bar(color=COLOR_OBSERVED)
-        .encode(
-            x=alt.X(f"{value}:Q", title=value.replace("_", " ")),
-            y=alt.Y(f"{label}:N", sort="-x", title=None),
-            tooltip=list(frame.columns),
-        )
-        .properties(height=max(220, 26 * len(frame)))
+    ordered = frame.sort_values(value)
+    figure = px.bar(ordered, x=value, y=label, orientation="h", text=value)
+    figure.update_traces(
+        marker_color=COLOR_OBSERVED,
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y}: %{x}<extra></extra>",
     )
+    figure.update_xaxes(title=value.replace("_", " "))
+    figure.update_yaxes(title=None, type="category")
+    return _style(figure, height=max(240, 30 * len(frame)), unified_hover=False)
 
 
-def backlog_area(frame: pd.DataFrame) -> alt.Chart:
-    """Arrivals vs departures, with the running backlog on a second axis."""
-    melted = frame.melt(
-        id_vars="period", value_vars=["created", "resolved"], var_name="flow", value_name="tickets"
+def backlog_area(frame: pd.DataFrame) -> go.Figure:
+    """Arrivals vs departures, with the running backlog on a second axis.
+
+    The bars answer "how much came in and went out"; the line answers "is the
+    queue growing" - two questions that only make sense together.
+    """
+    figure = make_subplots(specs=[[{"secondary_y": True}]])
+    figure.add_bar(
+        x=frame["period"],
+        y=frame["created"],
+        name="created",
+        marker_color=COLOR_OBSERVED,
+        opacity=0.85,
+        hovertemplate="created: %{y}<extra></extra>",
     )
-    bars = (
-        alt.Chart(melted)
-        .mark_bar(opacity=0.75)
-        .encode(
-            x=alt.X("period:T", title=None),
-            y=alt.Y("tickets:Q", title="tickets"),
-            color=alt.Color(
-                "flow:N",
-                scale=alt.Scale(domain=["created", "resolved"], range=[COLOR_OBSERVED, "#10b981"]),
-                title=None,
-            ),
-            xOffset="flow:N",
-            tooltip=["period:T", "flow:N", "tickets:Q"],
-        )
+    figure.add_bar(
+        x=frame["period"],
+        y=frame["resolved"],
+        name="resolved",
+        marker_color=COLOR_RESOLVED,
+        opacity=0.85,
+        hovertemplate="resolved: %{y}<extra></extra>",
     )
-    line = (
-        alt.Chart(frame)
-        .mark_line(color=COLOR_ALERT, strokeWidth=2)
-        .encode(
-            x="period:T",
-            y=alt.Y("open_backlog:Q", title="open backlog", axis=alt.Axis(titleColor=COLOR_ALERT)),
-            tooltip=["period:T", "open_backlog:Q"],
-        )
+    figure.add_scatter(
+        x=frame["period"],
+        y=frame["open_backlog"],
+        name="open backlog",
+        mode="lines",
+        line={"color": COLOR_ALERT, "width": 2},
+        hovertemplate="backlog: %{y}<extra></extra>",
+        secondary_y=True,
     )
-    return alt.layer(bars, line).resolve_scale(y="independent").properties(height=300)
+    figure.update_layout(barmode="group", bargap=0.15)
+    figure.update_yaxes(title="tickets", secondary_y=False, rangemode="tozero")
+    figure.update_yaxes(title="open backlog", secondary_y=True, showgrid=False, color=COLOR_ALERT)
+    figure.update_xaxes(title=None)
+    return _time_controls(_style(figure, height=330))
 
 
 def anomaly_chart(
-    diagnostics: pd.DataFrame, alerts: pd.DataFrame
-) -> alt.LayerChart | alt.FacetChart:
-    """Observed vs expected counts, with alert markers.
+    diagnostics: pd.DataFrame, alerts: pd.DataFrame, z_spike: float | None = None
+) -> go.Figure:
+    """Observed vs expected counts, the alert band, and the alerts themselves.
 
     Args:
-        diagnostics: Per-day frame for a single series, with ``period``,
-            ``observed`` and ``expected``.
-        alerts: Alerts for the same series, with ``period``, ``kind`` and
-            ``observed``.
+        diagnostics: Per-period frame of a single series, with ``period``,
+            ``observed``, ``expected`` and - when available - ``scale``.
+        alerts: Alerts for that series, with ``period``, ``kind``, ``observed``,
+            ``expected`` and ``severity``.
+        z_spike: Spike threshold. Given together with ``scale``, it draws the
+            level a single day has to cross to be flagged, which makes the
+            decision rule visible instead of implicit.
+
+    Returns:
+        A figure layering the threshold, the expected line, the observed line
+        and one marker trace per alert kind.
     """
-    base = alt.Chart(diagnostics).encode(x=alt.X("period:T", title=None))
-    expected = base.mark_line(color=COLOR_EXPECTED, strokeDash=[4, 3]).encode(
-        y=alt.Y("expected:Q", title="tickets per period"),
-        tooltip=["period:T", "expected:Q"],
-    )
-    observed = base.mark_line(color=COLOR_OBSERVED, strokeWidth=2).encode(
-        y="observed:Q",
-        tooltip=["period:T", "observed:Q", "expected:Q", "robust_z:Q", "ewma:Q"],
-    )
-    layers = [expected, observed]
+    figure = go.Figure()
 
-    if len(alerts):
-        markers = (
-            alt.Chart(alerts)
-            .mark_point(size=110, filled=True, opacity=0.9)
-            .encode(
-                x="period:T",
-                y="observed:Q",
-                color=alt.Color(
-                    "kind:N",
-                    scale=alt.Scale(
-                        domain=["spike", "emerging"], range=[COLOR_ALERT, COLOR_EMERGING]
-                    ),
-                    title="alert",
-                ),
-                shape=alt.Shape("kind:N", legend=None),
-                tooltip=["period:T", "kind:N", "observed:Q", "expected:Q", "severity:Q"],
-            )
+    if z_spike is not None and "scale" in diagnostics.columns:
+        figure.add_scatter(
+            x=diagnostics["period"],
+            y=diagnostics["expected"] + z_spike * diagnostics["scale"],
+            name=f"spike threshold (z={z_spike:g})",
+            mode="lines",
+            line={"color": "rgba(220,38,38,0.45)", "dash": "dot", "width": 1},
+            hovertemplate="threshold: %{y:.1f}<extra></extra>",
         )
-        layers.append(markers)
-    return alt.layer(*layers).properties(height=320).interactive(bind_y=False)
 
+    figure.add_scatter(
+        x=diagnostics["period"],
+        y=diagnostics["expected"],
+        name="expected",
+        mode="lines",
+        line={"color": COLOR_EXPECTED, "dash": "dash", "width": 1.5},
+        hovertemplate="expected: %{y:.1f}<extra></extra>",
+    )
+    figure.add_scatter(
+        x=diagnostics["period"],
+        y=diagnostics["observed"],
+        name="observed",
+        mode="lines",
+        line={"color": COLOR_OBSERVED, "width": 2},
+        hovertemplate="observed: %{y}<extra></extra>",
+    )
 
-def residual_chart(
-    diagnostics: pd.DataFrame, ewma_threshold: float
-) -> alt.LayerChart | alt.FacetChart:
-    """EWMA of standardised residuals, with the decision threshold."""
-    line = (
-        alt.Chart(diagnostics)
-        .mark_area(color=COLOR_EMERGING, opacity=0.45)
-        .encode(
-            x=alt.X("period:T", title=None),
-            y=alt.Y("ewma:Q", title="EWMA of residuals"),
-            tooltip=["period:T", "ewma:Q", "robust_z:Q"],
+    for kind, color, symbol in (
+        ("spike", COLOR_ALERT, "circle"),
+        ("emerging", COLOR_EMERGING, "diamond"),
+    ):
+        subset = alerts[alerts["kind"] == kind] if len(alerts) else pd.DataFrame()
+        if not len(subset):
+            continue
+        figure.add_scatter(
+            x=subset["period"],
+            y=subset["observed"],
+            name=kind,
+            mode="markers",
+            marker={
+                "color": color,
+                "size": 11,
+                "symbol": symbol,
+                "line": {"width": 1, "color": "white"},
+            },
+            customdata=subset[["expected", "severity"]].to_numpy(),
+            hovertemplate=(
+                f"<b>{kind}</b><br>observed: %{{y}}<br>expected: %{{customdata[0]:.1f}}"
+                "<br>severity: %{customdata[1]:.1f}<extra></extra>"
+            ),
         )
-    )
-    rule = (
-        alt.Chart(pd.DataFrame({"threshold": [ewma_threshold]}))
-        .mark_rule(color=COLOR_ALERT, strokeDash=[5, 4])
-        .encode(y="threshold:Q")
-    )
-    return alt.layer(line, rule).properties(height=160)
+
+    figure.update_yaxes(title="tickets per period", rangemode="tozero")
+    figure.update_xaxes(title=None)
+    return _time_controls(_style(figure, height=360), slider=True)
 
 
-def probability_bars(frame: pd.DataFrame) -> alt.Chart:
+def residual_chart(diagnostics: pd.DataFrame, ewma_threshold: float) -> go.Figure:
+    """EWMA of standardised residuals against its decision threshold."""
+    figure = go.Figure()
+    figure.add_scatter(
+        x=diagnostics["period"],
+        y=diagnostics["ewma"],
+        name="EWMA",
+        mode="lines",
+        line={"color": COLOR_EMERGING, "width": 1.5},
+        fill="tozeroy",
+        fillcolor="rgba(245,158,11,0.35)",
+        hovertemplate="EWMA: %{y:.2f}<extra></extra>",
+    )
+    figure.add_hline(
+        y=ewma_threshold,
+        line={"color": COLOR_ALERT, "dash": "dash", "width": 1.5},
+        annotation_text=f"threshold {ewma_threshold:g}",
+        annotation_position="top left",
+    )
+    figure.update_yaxes(title="EWMA of residuals", rangemode="tozero")
+    figure.update_xaxes(title=None)
+    return _style(figure, height=200)
+
+
+def probability_bars(frame: pd.DataFrame) -> go.Figure:
     """Class probabilities of a single prediction."""
-    return (
-        alt.Chart(frame)
-        .mark_bar(color=COLOR_OBSERVED)
-        .encode(
-            x=alt.X("score:Q", title="probability", scale=alt.Scale(domain=[0, 1])),
-            y=alt.Y("label:N", sort="-x", title=None),
-            tooltip=["label:N", "score:Q"],
-        )
-        .properties(height=28 * max(len(frame), 2))
+    ordered = frame.sort_values("score")
+    figure = px.bar(
+        ordered,
+        x="score",
+        y="label",
+        orientation="h",
+        text=[f"{value:.0%}" for value in ordered["score"]],
     )
+    figure.update_traces(
+        marker_color=COLOR_OBSERVED,
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="%{y}: %{x:.1%}<extra></extra>",
+    )
+    figure.update_xaxes(title="probability", range=[0, 1.15], tickformat=".0%")
+    figure.update_yaxes(title=None, type="category")
+    return _style(figure, height=max(180, 46 * len(frame)), unified_hover=False)
 
 
-def categorical_scale(values: pd.Series | list[str], noise_value: str | None = None) -> alt.Scale:
-    """Fixed-order categorical color scale, with a neutral gray for ``noise_value``.
+def categorical_scale(values: pd.Series, noise_value: str | None = None) -> dict[str, str]:
+    """Build a stable colour map for a categorical column.
 
-    Colors are assigned in a fixed sorted order rather than left to Altair's
-    default (which reorders as the data changes), and HDBSCAN's noise label - if
-    present - always renders as the same neutral gray instead of a cycled hue.
+    Args:
+        values: The column that will drive the colour.
+        noise_value: Category to render in grey - HDBSCAN's ``noise`` bucket,
+            which should stay legible without competing with real clusters.
+
+    Returns:
+        A ``category -> colour`` mapping for Plotly's ``color_discrete_map``.
     """
-    unique = sorted(str(v) for v in set(values) if v != noise_value)
-    colors = [TABLEAU20[i % len(TABLEAU20)] for i in range(len(unique))]
-    if noise_value is not None and noise_value in set(values):
-        return alt.Scale(domain=[noise_value, *unique], range=[COLOR_NOISE, *colors])
-    return alt.Scale(domain=unique, range=colors)
+    categories = sorted({str(value) for value in values})
+    if noise_value is not None:
+        categories = [value for value in categories if value != noise_value]
+
+    mapping = {
+        category: _QUALITATIVE[index % len(_QUALITATIVE)]
+        for index, category in enumerate(categories)
+    }
+    if noise_value is not None:
+        mapping[noise_value] = COLOR_NOISE
+    return mapping
 
 
 def embedding_scatter(
-    frame: pd.DataFrame, color: str, color_scale: alt.Scale, tooltip: list[str]
-) -> alt.Chart:
-    """Interactive 2D layout (e.g. a UMAP projection), points coloured by ``color``.
+    frame: pd.DataFrame,
+    color: str,
+    color_map: dict[str, str] | None = None,
+    hover_columns: tuple[str, ...] | list[str] = (),
+) -> go.Figure:
+    """2D ticket map: one point per ticket, coloured by any attribute.
 
-    The axes are UMAP components: their scale and orientation carry no meaning
-    on their own, only relative distance does, so their ticks are hidden.
-    ``.interactive()`` enables pan/zoom; the tooltip is the per-point detail.
+    The axes are hidden on purpose: UMAP coordinates have no unit and no
+    meaning beyond relative position, and labelling them invites readers to
+    over-interpret distance. Rendered through WebGL so a few thousand points
+    stay smooth to pan and zoom.
+
+    Args:
+        frame: Must carry ``x`` and ``y`` plus the colour and hover columns.
+        color: Column driving the colour.
+        color_map: Output of :func:`categorical_scale`.
+        hover_columns: Extra columns to show on hover.
     """
-    return (
-        alt.Chart(frame)
-        .mark_circle(size=42, opacity=0.7)
-        .encode(
-            x=alt.X("x:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False)),
-            y=alt.Y("y:Q", title=None, axis=alt.Axis(labels=False, ticks=False, grid=False)),
-            color=alt.Color(
-                f"{color}:N", scale=color_scale, legend=alt.Legend(title=None, symbolLimit=40)
+    figure = px.scatter(
+        frame,
+        x="x",
+        y="y",
+        color=color,
+        color_discrete_map=color_map or {},
+        hover_data=list(hover_columns),
+        render_mode="webgl",
+        opacity=0.75,
+    )
+    figure.update_traces(marker={"size": 6, "line": {"width": 0}})
+    figure.update_xaxes(visible=False)
+    figure.update_yaxes(visible=False, scaleanchor="x", scaleratio=1)
+    styled = _style(figure, height=560, unified_hover=False)
+    # A vertical legend on the right: with 20+ clusters a horizontal one eats
+    # half the plot.
+    styled.update_layout(
+        legend={"orientation": "v", "yanchor": "top", "y": 1, "x": 1.01, "title": color}
+    )
+    return styled
+
+
+def purity_heatmap(frame: pd.DataFrame) -> go.Figure:
+    """Discovered family x declared category contingency, normalised per family.
+
+    Args:
+        frame: Long-format frame with ``cluster``, ``category``, ``share`` and
+            ``tickets``.
+    """
+    shares = frame.pivot_table(index="cluster", columns="category", values="share", fill_value=0.0)
+    counts = frame.pivot_table(
+        index="cluster", columns="category", values="tickets", fill_value=0
+    ).reindex(index=shares.index, columns=shares.columns, fill_value=0)
+
+    figure = go.Figure(
+        go.Heatmap(
+            z=shares.to_numpy(),
+            x=[str(column) for column in shares.columns],
+            y=[str(index) for index in shares.index],
+            customdata=counts.to_numpy(),
+            colorscale="Blues",
+            zmin=0,
+            zmax=1,
+            colorbar={"title": "share", "tickformat": ".0%"},
+            hovertemplate=(
+                "family %{y} x %{x}<br>share: %{z:.0%}<br>tickets: %{customdata}<extra></extra>"
             ),
-            tooltip=tooltip,
         )
-        .properties(height=560)
-        .interactive()
     )
-
-
-def purity_heatmap(frame: pd.DataFrame) -> alt.Chart:
-    """Cluster x declared-category contingency, normalised per cluster."""
-    return (
-        alt.Chart(frame)
-        .mark_rect()
-        .encode(
-            x=alt.X("category:N", title=None, axis=alt.Axis(labelAngle=-40)),
-            y=alt.Y("cluster:N", title="family"),
-            color=alt.Color("share:Q", scale=alt.Scale(scheme="blues"), title="share"),
-            tooltip=["cluster:N", "category:N", "share:Q", "tickets:Q"],
-        )
-        .properties(height=max(240, 24 * frame["cluster"].nunique()))
-    )
+    figure.update_xaxes(title=None, tickangle=-40)
+    figure.update_yaxes(title="family", type="category")
+    return _style(figure, height=max(260, 22 * len(shares)), unified_hover=False)

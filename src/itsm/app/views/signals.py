@@ -2,10 +2,52 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pandas as pd
 import streamlit as st
 
 from itsm.app import charts, state
+from itsm.timeutils import period_freq
+
+_TRACE_COLUMNS = [
+    "ticket_id",
+    "opened_at",
+    "designation",
+    "priority",
+    "assignment_group",
+    "state",
+]
+
+
+def _render_selected_period(
+    selection: Any, series_name: str, dimension: str, frequency: str
+) -> None:
+    """List the tickets behind the point the user clicked on the chart.
+
+    This is the whole point of an interactive chart here: an anomaly score
+    answers "something happened", the underlying tickets answer "what".
+    """
+    state_dict = selection if isinstance(selection, dict) else {}
+    points = state_dict.get("selection", {}).get("points", [])
+    if not points:
+        return
+
+    stamp = pd.to_datetime(points[0].get("x"))
+    tickets = state.tickets()
+    periods = (
+        pd.to_datetime(tickets["opened_at"]).dt.to_period(period_freq(frequency)).dt.to_timestamp()
+    )
+    subset = tickets[(periods == stamp) & (tickets[dimension].astype(str) == str(series_name))]
+
+    with st.container(border=True):
+        st.markdown(f"**{len(subset)} ticket(s)** opened on {stamp:%Y-%m-%d} in `{series_name}`")
+        if len(subset):
+            st.dataframe(
+                subset[_TRACE_COLUMNS].sort_values("opened_at"),
+                hide_index=True,
+                height=min(320, 40 + 35 * len(subset)),
+            )
 
 
 def render() -> None:
@@ -56,7 +98,6 @@ def render() -> None:
     else:
         st.dataframe(
             alerts,
-            use_container_width=True,
             hide_index=True,
             column_config={
                 "poisson_p": st.column_config.NumberColumn("Poisson p", format="%.2e"),
@@ -87,17 +128,22 @@ def render() -> None:
     if len(series_alerts):
         series_alerts["period"] = pd.to_datetime(series_alerts["period"])
 
-    st.altair_chart(
-        charts.anomaly_chart(series_diagnostics, series_alerts), use_container_width=True
+    selection = st.plotly_chart(
+        charts.anomaly_chart(series_diagnostics, series_alerts, z_spike=z_spike),
+        key=f"anomaly-{dimension}-{frequency}-{series_name}",
+        on_select="rerun",
+        selection_mode="points",
     )
     st.caption(
-        "Dashed line: expected volume, the median of the same weekday over the trailing "
-        "window. Robust to contamination, so the start of an incident does not raise its "
-        "own baseline."
+        "Dashed grey: expected volume - the median and trimmed mean of the same weekday "
+        "over the trailing window, robust to contamination so the start of an incident "
+        "does not raise its own baseline. Dotted red: the level a single period must "
+        "cross to be flagged as a spike. **Click a point to list that period's tickets.**"
     )
-    st.altair_chart(
-        charts.residual_chart(series_diagnostics, ewma_threshold), use_container_width=True
-    )
+
+    _render_selected_period(selection, series_name, dimension, frequency)
+
+    st.plotly_chart(charts.residual_chart(series_diagnostics, ewma_threshold))
 
     manifest = state.anomaly_manifest()
     if not manifest:
@@ -150,8 +196,4 @@ def render() -> None:
         str(metrics.get("false_alarms_per_100_series_days", "-")),
     )
 
-    st.dataframe(
-        pd.DataFrame(metrics["per_anomaly"]),
-        use_container_width=True,
-        hide_index=True,
-    )
+    st.dataframe(pd.DataFrame(metrics["per_anomaly"]), hide_index=True)

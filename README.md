@@ -90,7 +90,7 @@ src/itsm/
 ├── models/              # classifier, sentiment, weak-signal detector, artifact store
 ├── pipelines/           # train / evaluate / report, one run() each
 ├── api/                 # FastAPI app, routers, schemas, dependencies
-└── app/                 # Streamlit UI: state (caching), charts, one module per page
+└── app/                 # Streamlit UI: cached state, Plotly charts, one module per page
 docs/                    # data, analysis, modelling, API, app, results, ADR
 scripts/                 # summarize_run.py - headline figures of a full run
 tests/                   # hermetic suite on a small generated dataset
@@ -105,7 +105,7 @@ None of them contains analysis logic, so they cannot drift apart.
 * [`docs/02-analysis.md`](docs/02-analysis.md) - clustering method, cluster naming, lifecycle indicators.
 * [`docs/03-modeling.md`](docs/03-modeling.md) - the three model families, evaluation protocols, how to read the numbers.
 * [`docs/04-api.md`](docs/04-api.md) - endpoints, serving model, what is deliberately not included.
-* [`docs/05-app.md`](docs/05-app.md) - Streamlit architecture, caching strategy, the four pages.
+* [`docs/05-app.md`](docs/05-app.md) - Streamlit architecture, caching strategy, Plotly interactivity, the five pages.
 * [`docs/06-results.md`](docs/06-results.md) - **what the models actually score**, and what those numbers do and do not mean.
 * [`docs/adr/0001-stack-and-baselines.md`](docs/adr/0001-stack-and-baselines.md) - why these choices.
 

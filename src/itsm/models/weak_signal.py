@@ -43,6 +43,7 @@ import pandas as pd
 from scipy import stats
 
 from itsm.logging import get_logger
+from itsm.timeutils import period_freq
 
 logger = get_logger("models.weak_signal")
 
@@ -69,7 +70,7 @@ def build_count_series(
     """
     frame = tickets.copy()
     frame[timestamp_column] = pd.to_datetime(frame[timestamp_column])
-    frame["_period"] = frame[timestamp_column].dt.to_period(freq).dt.to_timestamp()
+    frame["_period"] = frame[timestamp_column].dt.to_period(period_freq(freq)).dt.to_timestamp()
     key = by or "_all"
     if by is None:
         frame[key] = "all"
@@ -200,8 +201,11 @@ class WeakSignalDetector:
         """Score one count series day by day.
 
         Returns:
-            Frame indexed by period with ``observed``, ``expected``,
-            ``robust_z``, ``poisson_p`` and ``ewma`` columns.
+            Frame indexed by period with ``observed``, ``expected``, ``scale``,
+            ``robust_z``, ``poisson_p`` and ``ewma`` columns. ``scale`` is
+            exported so a caller can redraw the decision rule -
+            ``expected + z_spike * scale`` is the level a single period must
+            cross to be flagged.
         """
         config = self.config
         records: list[dict[str, object]] = []
@@ -216,6 +220,7 @@ class WeakSignalDetector:
                         "period": period,
                         "observed": observed,
                         "expected": np.nan,
+                        "scale": np.nan,
                         "robust_z": 0.0,
                         "poisson_p": 1.0,
                         "ewma": 0.0,
@@ -238,6 +243,7 @@ class WeakSignalDetector:
                     "period": period,
                     "observed": observed,
                     "expected": round(expected, 2),
+                    "scale": round(float(scale), 3),
                     "robust_z": round(float(robust_z), 3),
                     "poisson_p": poisson_p,
                     "ewma": round(float(ewma), 3),

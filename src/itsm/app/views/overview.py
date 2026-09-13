@@ -50,27 +50,19 @@ def render() -> None:
     split = right.toggle("Split by category", value=False)
 
     volume = volume_timeline(tickets, freq=frequency, by="category" if split else None)
-    left.altair_chart(
-        charts.volume_line(volume, color="category" if split else None),
-        use_container_width=True,
-    )
+    left.plotly_chart(charts.volume_line(volume, color="category" if split else None))
 
     st.subheader("Flow and backlog")
     st.caption(
         "Capacity is driven by the difference between arrivals and departures, not by volume."
     )
-    st.altair_chart(
-        charts.backlog_area(backlog_timeline(tickets, freq=frequency)), use_container_width=True
-    )
+    st.plotly_chart(charts.backlog_area(backlog_timeline(tickets, freq=frequency)))
 
     ageing_column, dimension_column = st.columns([1, 2])
     with ageing_column:
         st.subheader("Backlog ageing")
         ageing = aging_backlog(tickets)
-        st.altair_chart(
-            charts.category_bars(ageing, value="tickets", label="age_bucket"),
-            use_container_width=True,
-        )
+        st.plotly_chart(charts.category_bars(ageing, value="tickets", label="age_bucket"))
     with dimension_column:
         st.subheader("Indicators by dimension")
         dimension = st.selectbox(
@@ -78,7 +70,6 @@ def render() -> None:
         )
         st.dataframe(
             kpis_by(tickets, dimension),
-            use_container_width=True,
             hide_index=True,
             column_config={
                 "share": st.column_config.ProgressColumn(
@@ -111,12 +102,10 @@ def render() -> None:
     transitions_column, dwell_column = st.columns(2)
     with transitions_column:
         st.markdown("**Transition matrix**")
-        st.dataframe(
-            state_transitions(events), use_container_width=True, hide_index=True, height=320
-        )
+        st.dataframe(state_transitions(events), hide_index=True, height=320)
     with dwell_column:
         st.markdown("**Time spent per state**")
-        st.dataframe(dwell_times(events), use_container_width=True, hide_index=True, height=320)
+        st.dataframe(dwell_times(events), hide_index=True, height=320)
 
     with st.expander("Follow one ticket"):
         ticket_id = st.selectbox("Ticket", tickets["ticket_id"].tail(200).tolist()[::-1])
@@ -127,4 +116,4 @@ def render() -> None:
             f"**{trace['current_state']}** - {trace['n_updates']} updates - "
             f"{'open' if trace['is_open'] else 'closed'}"
         )
-        st.dataframe(pd.DataFrame(trace["timeline"]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(trace["timeline"]), hide_index=True)
