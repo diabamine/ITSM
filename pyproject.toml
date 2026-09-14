@@ -34,6 +34,13 @@ hf = [
     "transformers>=4.46",
     "torch>=2.4",
 ]
+# Microsoft Presidio PII analyser. Separate from `hf`: it pulls spaCy, not
+# torch, and the spaCy pipeline itself is a one-time `python -m spacy download`
+# (see docs/07-privacy.md).
+presidio = [
+    "presidio-analyzer>=2.2",
+    "spacy>=3.7",
+]
 # Public dataset adapters (Hugging Face Hub / UCI archives).
 datasets = ["datasets>=3.1", "requests>=2.32"]
 

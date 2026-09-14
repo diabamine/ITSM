@@ -238,3 +238,24 @@ def bootstrap() -> None:
         status.update(label="Ready", state="complete", expanded=False)
     st.cache_data.clear()
     st.cache_resource.clear()
+
+
+@st.cache_resource(show_spinner="Loading the anonymiser...")
+def anonymiser(backend: str) -> Any:
+    """Anonymiser for the requested backend, built once per backend."""
+    from itsm.privacy.anonymiser import Anonymiser
+
+    current = settings()
+    return Anonymiser(
+        backend=backend,  # type: ignore[arg-type]
+        model_name=current.pii_model(backend),  # type: ignore[arg-type]
+        language=current.presidio_language,
+    )
+
+
+@st.cache_data(show_spinner=False)
+def raw_tickets() -> pd.DataFrame:
+    """The un-anonymised extract, needed to show a before/after comparison."""
+    from itsm.pipelines.anonymise import load_raw_tickets
+
+    return load_raw_tickets(settings())

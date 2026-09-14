@@ -18,10 +18,12 @@ itsm/app/
 ├── state.py       # every cached resource (data, models, scans)
 ├── charts.py      # Altair chart builders, no Streamlit calls
 └── views/         # one module per page, each exposing render()
-    ├── overview.py    trends, backlog, status updates
-    ├── families.py    discovered families vs declared taxonomy
-    ├── signals.py     spikes and emerging weak signals
-    └── triage.py      the ITSM intake form scored live
+    ├── overview.py       trends, backlog, status updates
+    ├── families.py       discovered families vs declared taxonomy
+    ├── embedding_map.py  2D ticket map (UMAP + HDBSCAN), tuned live
+    ├── signals.py        spikes and emerging weak signals
+    ├── triage.py         the ITSM intake form scored live
+    └── privacy.py        what personal data is found, and what replaces it
 ```
 
 ### Choices
@@ -106,6 +108,26 @@ prefilled bilingual examples. On submit, every model runs on it:
 
 That last block is the bridge from "a model outputs a label" to "an agent gets
 a decision they can act on".
+
+### Anonymisation - what leaves the free text
+
+The page a reviewer wants to *watch* rather than read a metric about. A text
+box (prefilled with a ticket carrying a name, a phone, a mailbox, a matricule,
+a date of birth and an IBAN) is scored live: every detected identifier is
+highlighted in place, colour-coded by type and annotated with the detector's
+confidence on hover, followed by the anonymised output and the table of
+replacements.
+
+Below it, the measured quality read straight from `reports/privacy.json`:
+coverage recall, exact-boundary recall, precision, leak rate, residual PII and
+the utility cost, per backend, plus the per-entity bar chart - and the
+unseen-name probe, which is the number that actually decides which detector to
+deploy.
+
+The detector (`rules` / `transformer`) is switchable from the page, and a
+banner states whether `ITSM_USE_ANONYMISED` is on, i.e. whether the *other*
+pages of the app are currently reading anonymised text or raw text. A privacy
+control whose state nobody can see is a privacy control nobody trusts.
 
 ---
 

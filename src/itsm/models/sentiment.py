@@ -246,7 +246,12 @@ class TransformerSentiment:
             from transformers import pipeline  # optional dependency
 
             logger.info("loading sentiment model %s", self.model_name)
-            self._pipeline = pipeline(
+            # Typed as Any deliberately: the transformers factory is a stack of
+            # per-task overloads that does not accept tokenizer kwargs
+            # alongside a task passed as a plain string, and this project must
+            # type-check identically whether or not the `hf` extra is present.
+            build: Any = pipeline
+            self._pipeline = build(
                 "sentiment-analysis",
                 model=self.model_name,
                 truncation=True,

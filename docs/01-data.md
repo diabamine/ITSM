@@ -103,8 +103,22 @@ mechanisms put a realistic ceiling on it:
 | `typo_rate` | 12% | Transposed or dropped characters, shouted titles, truncations. What the character n-gram channel exists to absorb. |
 
 Set all three to 0 for the noiseless variant. With the defaults, the
-classifier tops out near 0.85 macro-F1 - see
+classifier tops out near 0.86 macro-F1 - see
 [`06-results.md`](06-results.md).
+
+**Personal data** - the free text carries what a real ticket body carries: a
+colleague's name, a mobile number for a callback, a mailbox, a matricule, and
+occasionally an IBAN or a social-security number pasted by mistake. 53% of
+tickets carry at least one identifier, across all ten entity types.
+
+What makes this more than decoration is the **ground truth**: the generator
+records the exact character offsets of every planted value in the `pii_spans`
+column, so the anonymisation step can be *scored* rather than demonstrated.
+Values are invented, mail domains sit in the reserved `.example` space, and the
+IBAN and card number match the right shape while deliberately failing their
+checksum. Controlled by `pii_rate` (0.45 of bodies) and `pii_designation_rate`
+(0.35 of eligible titles); set both to 0 for a corpus with no personal data.
+Full detail: [`07-privacy.md`](07-privacy.md).
 
 **Injected anomalies** - the manifest returned alongside the data:
 

@@ -44,6 +44,17 @@ leaking internals.
 | `POST` | `/v1/sentiment` | Returns label, signed score in `[-1, 1]` and the matched `evidence` markers. |
 | `POST` | `/v1/clusters/assign` | Assigns designations to the families discovered by the analysis. |
 
+### Privacy
+
+| Method | Path | Notes |
+|--------|------|-------|
+| `POST` | `/v1/anonymise` | Detects personal data and replaces each value with its entity tag (`<PERSON>`, `<EMAIL>`, `<IBAN>`). The response returns entity **types and offsets but never the matched values** - an API response is logged, cached and screenshotted, and echoing the personal data back would recreate the exposure the call exists to remove. |
+
+Exposed so a caller can scrub text *before* sending it anywhere else,
+including before the other endpoints of this very API. A service that
+anonymises its own storage while accepting raw personal data over the wire and
+writing it to a request log has moved the problem, not solved it.
+
 Batches are capped at 512 texts per request (Pydantic validation, `422`
 otherwise): a bounded batch keeps latency predictable and makes back-pressure
 the caller's problem, not the service's.

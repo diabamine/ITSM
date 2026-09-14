@@ -58,7 +58,7 @@ def test_priority_matrix(impact: int, urgency: int, expected: Priority) -> None:
     assert _priority_from(impact, urgency) is expected
 
 
-@pytest.mark.parametrize("page", ["overview", "families", "signals", "triage"])
+@pytest.mark.parametrize("page", ["overview", "families", "signals", "triage", "privacy"])
 def test_pages_render_without_exception(
     trained_workspace: object, tmp_path: Path, page: str
 ) -> None:

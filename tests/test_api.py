@@ -105,3 +105,33 @@ def test_request_id_is_echoed(client: TestClient) -> None:
 
 def test_validation_error_on_empty_batch(client: TestClient) -> None:
     assert client.post("/v1/classify", json={"texts": []}).status_code == 422
+
+
+def test_anonymise_endpoint_removes_personal_data(client: TestClient) -> None:
+    response = client.post(
+        "/v1/anonymise",
+        json={
+            "texts": [
+                "Merci de contacter Sophie Bernard au 06 12 34 56 78.",
+                "Le VPN se deconnecte toutes les cinq minutes.",
+            ]
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+
+    first, second = payload["results"]
+    assert "Sophie Bernard" not in first["text"]
+    assert "06 12 34 56 78" not in first["text"]
+    assert first["n_replaced"] == 2
+    assert {span["entity"] for span in first["spans"]} == {"PERSON", "PHONE"}
+    # A ticket with no personal data must come back untouched.
+    assert second["n_replaced"] == 0
+    assert second["text"] == "Le VPN se deconnecte toutes les cinq minutes."
+
+
+def test_anonymise_response_never_echoes_the_values(client: TestClient) -> None:
+    """The response carries offsets and types, never the matched strings."""
+    response = client.post("/v1/anonymise", json={"texts": ["Merci de contacter Sophie Bernard."]})
+    span = response.json()["results"][0]["spans"][0]
+    assert set(span) == {"start", "end", "entity", "score"}

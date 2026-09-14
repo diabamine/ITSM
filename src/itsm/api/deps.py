@@ -23,6 +23,7 @@ from itsm.models.classifier import TicketClassifier
 from itsm.models.sentiment import LexiconSentiment, TransformerSentiment, build_sentiment
 from itsm.pipelines.run_analysis import CLUSTERER_ARTIFACT
 from itsm.pipelines.train_classifier import ARTIFACT_NAME as CLASSIFIER_ARTIFACT
+from itsm.privacy.anonymiser import Anonymiser
 
 
 @lru_cache(maxsize=1)
@@ -81,6 +82,7 @@ def reset_caches() -> None:
         get_sentiment,
         get_tickets,
         get_ticket_events,
+        get_anonymiser,
     ):
         provider.cache_clear()
 
@@ -92,3 +94,17 @@ ClustererDep = Annotated[DesignationClusterer, Depends(get_clusterer)]
 SentimentDep = Annotated["LexiconSentiment | TransformerSentiment", Depends(get_sentiment)]
 TicketsDep = Annotated[pd.DataFrame, Depends(get_tickets)]
 EventsDep = Annotated[pd.DataFrame, Depends(get_ticket_events)]
+
+
+@lru_cache(maxsize=1)
+def get_anonymiser() -> Anonymiser:
+    """Return the configured anonymiser, built once per process."""
+    settings = get_settings()
+    return Anonymiser(
+        backend=settings.anonymisation_backend,
+        model_name=settings.pii_model(settings.anonymisation_backend),
+        language=settings.presidio_language,
+    )
+
+
+AnonymiserDep = Annotated[Anonymiser, Depends(get_anonymiser)]

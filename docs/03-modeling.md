@@ -60,8 +60,8 @@ Reported:
 | `model_comparison` | `majority`, `complement_nb`, `logreg`, `linear_svc` on the same split. A macro-F1 that does not clearly beat `majority` means the pipeline is broken, not that the task is hard. |
 | `cross_validation` (`--cv`) | 5-fold macro-F1 mean and std, to size the uncertainty of a single split. |
 
-Measured on the reference dataset: macro-F1 0.850 against a 0.026 majority
-baseline, and ~89% of the volume auto-routable at ~91% accuracy above a 0.8
+Measured on the reference dataset: macro-F1 0.864 against a 0.027 majority
+baseline, and ~90% of the volume auto-routable at ~93% accuracy above a 0.8
 confidence threshold. Three very different estimators land within one point of
 each other, which says the ceiling is the label quality, not the model - see
 [`06-results.md`](06-results.md).
@@ -120,8 +120,8 @@ random to keep the sample representative. Reported metrics include
 **Cohen's kappa** rather than raw accuracy, because a "always neutral" model
 scores well on accuracy alone.
 
-Measured: macro-F1 0.757, kappa 0.579, and an informative asymmetry - 89%
-recall on frustrated requesters at 51% precision. For flagging tickets for a
+Measured: macro-F1 0.804, kappa 0.664, and an informative asymmetry - 87%
+recall on frustrated requesters at 61% precision. For flagging tickets for a
 proactive callback that is the right side to err on, but it is a finding to
 state, not a number to round up.
 
@@ -187,11 +187,12 @@ false-alarm budget the team accepts.
 ### Measured behaviour
 
 Detection rates, delays and the threshold ablation that set the defaults are in
-[`06-results.md`](06-results.md). Headline: recall 1.00 across five seeds at the
-default threshold; the slow ramp is flagged as `emerging` about two weeks before
-it peaks; one low-volume spike is missed on the reference seed - reported rather
-than hidden, because the reason (5 tickets against an expected 2 is genuinely
-weak evidence) is the useful part.
+[`06-results.md`](06-results.md). Headline: all four injected anomalies are
+caught on the reference dataset, the slow ramp 12 days in - well before it
+peaks - while the permanent level shift takes 62 days, because a rolling
+baseline absorbs a step change by construction. Across five seeds recall sits
+at 0.95-1.00 depending on the threshold, and the threshold is a false-alarm
+budget rather than a tuning constant.
 
 ### Beyond the current implementation
 

@@ -87,9 +87,11 @@ class DetectorConfig:
         window_days: Length of the trailing baseline window.
         guard_days: Days skipped between the baseline window and the scored
             day. Without this gap a slow ramp walks into its own baseline and
-            the detector learns the incident instead of flagging it; measured
-            on the reference dataset, a 7-day guard cuts the detection delay of
-            the ramp roughly in half.
+            the detector learns the incident instead of flagging it. The
+            mechanism is sound; its measured benefit is *not* established -
+            across five seeds it is inside the noise, and one measurement had
+            it costing a marginal detection. See docs/06-results.md before
+            quoting it as a win.
         seasonal: Compare a day only with the same weekday of the window.
         min_history: Days of history required before scoring starts.
         z_spike: Robust z-score above which a single day is a ``spike``.

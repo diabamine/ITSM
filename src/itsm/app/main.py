@@ -13,7 +13,7 @@ from __future__ import annotations
 import streamlit as st
 
 from itsm.app import state
-from itsm.app.views import embedding_map, families, overview, signals, triage
+from itsm.app.views import embedding_map, families, overview, privacy, signals, triage
 from itsm.logging import setup_logging
 
 st.set_page_config(
@@ -103,6 +103,12 @@ def main() -> None:
                     title="Intake & triage",
                     icon=":material/support_agent:",
                     url_path="triage",
+                ),
+                st.Page(
+                    privacy.render,
+                    title="Anonymisation",
+                    icon=":material/shield_lock:",
+                    url_path="privacy",
                 ),
             ],
         }

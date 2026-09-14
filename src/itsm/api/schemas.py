@@ -152,3 +152,35 @@ class ErrorResponse(BaseModel):
 
     detail: str
     request_id: str | None = None
+
+
+class AnonymisationRequest(TextBatch):
+    """Texts to strip of personal data."""
+
+
+class SpanOut(BaseModel):
+    """Location and type of one detected identifier.
+
+    The matched value is deliberately absent: echoing it back into a response
+    that will be logged would defeat the purpose of the call.
+    """
+
+    start: int
+    end: int
+    entity: str
+    score: float
+
+
+class AnonymisedItem(BaseModel):
+    """One anonymised text."""
+
+    text: str
+    n_replaced: int
+    spans: list[SpanOut]
+
+
+class AnonymisationResponse(BaseModel):
+    """Batch anonymisation result."""
+
+    backend: str
+    results: list[AnonymisedItem]

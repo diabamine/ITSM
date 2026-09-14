@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from itsm import __version__
-from itsm.api.routers import analytics, health, predict
+from itsm.api.routers import analytics, health, predict, privacy
 from itsm.config import Settings, get_settings
 from itsm.logging import get_logger, setup_logging
 
@@ -72,6 +72,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {"name": "service", "description": "Health and model introspection."},
             {"name": "inference", "description": "Model predictions."},
             {"name": "analytics", "description": "Descriptive statistics and signals."},
+            {"name": "privacy", "description": "Removal of personal data from free text."},
         ],
     )
 
@@ -117,6 +118,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(predict.router)
     app.include_router(analytics.router)
+    app.include_router(privacy.router)
     return app
 
 

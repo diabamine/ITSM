@@ -28,10 +28,12 @@ data_app = typer.Typer(help="Build and inspect the dataset.", no_args_is_help=Tr
 analyze_app = typer.Typer(help="Descriptive analysis.", no_args_is_help=True)
 train_app = typer.Typer(help="Model training.", no_args_is_help=True)
 eval_app = typer.Typer(help="Model evaluation.", no_args_is_help=True)
+privacy_app = typer.Typer(help="Anonymisation of personal data.", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 app.add_typer(analyze_app, name="analyze")
 app.add_typer(train_app, name="train")
 app.add_typer(eval_app, name="eval")
+app.add_typer(privacy_app, name="privacy")
 
 console = Console()
 
@@ -292,3 +294,133 @@ def serve(
 
 if __name__ == "__main__":  # pragma: no cover
     app()
+
+
+# ------------------------------------------------------------------- privacy
+@privacy_app.command("anonymise")
+def privacy_anonymise(
+    backend: Annotated[str | None, typer.Option(help="rules | transformer | presidio")] = None,
+    keep_original: Annotated[
+        bool, typer.Option(help="Also store the raw text as <column>_raw.")
+    ] = False,
+) -> None:
+    """Produce an anonymised copy of the dataset."""
+    from itsm.pipelines.anonymise import run
+
+    report = run(
+        get_settings(),
+        backend=backend,  # type: ignore[arg-type]
+        keep_original=keep_original,
+    )
+    _print_metrics(
+        f"anonymisation ({report['backend']})",
+        {
+            key: report[key]
+            for key in (
+                "n_tickets",
+                "tickets_with_pii",
+                "tickets_with_pii_share",
+                "spans_replaced",
+                "distinct_values_replaced",
+            )
+        },
+    )
+    table = Table(title="personal data replaced by its entity tag", header_style="bold")
+    table.add_column("entity")
+    table.add_column("spans", justify="right")
+    for entity, count in report["spans_by_entity"].items():
+        table.add_row(entity, str(count))
+    console.print(table)
+    console.print(f"[green]written to[/green] {report['output']}")
+    console.print("[yellow]Set ITSM_USE_ANONYMISED=true so every pipeline reads it.[/yellow]")
+
+
+@privacy_app.command("eval")
+def privacy_eval(
+    backend: Annotated[
+        list[str] | None, typer.Option(help="Repeatable: rules, transformer, presidio.")
+    ] = None,
+    column: Annotated[str, typer.Option(help="Free-text column to score.")] = "description",
+    sample: Annotated[int, typer.Option(help="Tickets to score.")] = 2000,
+    utility: Annotated[
+        bool, typer.Option(help="Retrain the classifier to measure the cost.")
+    ] = True,
+    isolate: Annotated[
+        bool,
+        typer.Option(
+            help="Score each backend on its own recognisers, with no rule layer underneath."
+        ),
+    ] = False,
+) -> None:
+    """Score anonymisation quality: detection, leakage and downstream cost."""
+    from itsm.pipelines.eval_privacy import run
+
+    report = run(
+        get_settings(),
+        backends=tuple(backend or ["rules"]),  # type: ignore[arg-type]
+        column=column,
+        sample_size=sample,
+        with_utility=utility,
+        isolate=isolate,
+    )
+    if not report["has_ground_truth"]:
+        console.print(f"[yellow]{report['note']}[/yellow]")
+
+    for name, entry in report["backends"].items():
+        detection = entry.get("detection")
+        if detection:
+            _print_metrics(
+                f"detection - {name}",
+                {
+                    key: detection[key]
+                    for key in (
+                        "recall_coverage",
+                        "recall_partial",
+                        "recall_strict",
+                        "precision_partial",
+                        "f1_partial",
+                        "leak_rate_direct_identifiers",
+                        "false_positive_spans",
+                        "over_redacted_char_share",
+                    )
+                },
+            )
+            entities = Table(title=f"per entity - {name}", header_style="bold")
+            for header in ("entity", "support", "recall", "precision"):
+                entities.add_column(header)
+            for entity, values in detection["per_entity"].items():
+                entities.add_row(
+                    entity,
+                    str(values["support"]),
+                    f"{values['recall']:.3f}",
+                    f"{values['precision']:.3f}",
+                )
+            console.print(entities)
+
+        if entry.get("residual"):
+            _print_metrics(
+                f"residual PII in the output - {name}",
+                {
+                    key: entry["residual"][key]
+                    for key in (
+                        "checked_values",
+                        "residual_values",
+                        "residual_rate",
+                        "residual_rate_direct_identifiers",
+                    )
+                },
+            )
+        if entry.get("utility"):
+            _print_metrics(f"downstream utility (macro-F1) - {name}", entry["utility"]["macro_f1"])
+
+    probe = report.get("unseen_name_probe", {})
+    if probe:
+        table = Table(
+            title=f"unseen-name probe ({probe['n_names']} names no backend has seen)",
+            header_style="bold",
+        )
+        for header in ("backend", "recall", "missed probes"):
+            table.add_column(header)
+        for name, values in probe["backends"].items():
+            table.add_row(name, f"{values['recall']:.3f}", str(values["missed_probes"]))
+        console.print(table)
