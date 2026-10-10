@@ -9,7 +9,7 @@ Four deliverables, one codebase:
 | # | Question | Where |
 |---|----------|-------|
 | 0 | Can we analyse this at all - what personal data is in the text? | `itsm.privacy` + `itsm privacy` |
-| 1 | What families of tickets exist, and what do the status updates say? | `itsm.analysis` + `itsm analyze` |
+| 1 | What families of tickets exist, what is below them, and what is driving an increase? | `itsm.analysis` + `itsm analyze` |
 | 2 | Can we predict the category, the mood, the next spike - and how well? | `itsm.models` + `itsm.pipelines` + `itsm train` / `itsm eval` |
 | 3 | How is this served, and shown? | `itsm.api` + `itsm serve`, `itsm.app` + `itsm app` |
 
@@ -23,6 +23,7 @@ uv run itsm data build       # generate the dataset (offline, seeded)
 uv run itsm privacy anonymise  # strip personal data from the free text
 uv run itsm analyze designations
 uv run itsm analyze lifecycle
+uv run itsm analyze root-cause   # what is driving the latest increase
 uv run itsm train classifier
 uv run itsm eval sentiment
 uv run itsm eval signals
@@ -34,23 +35,21 @@ uv run itsm serve            # FastAPI + docs -> http://127.0.0.1:8000/docs
 > First time and in a hurry: `uv sync && uv run itsm app`, then click
 > **Prepare the demo** - it builds the dataset and trains the models for you.
 
-Everything above runs **CPU-only and offline**, with scikit-learn defaults.
-Transformer backends are opt-in:
+Every **default** code path runs CPU-only and offline, with scikit-learn. The
+heavier backends are selected by environment variable rather than installed
+separately:
 
 ```bash
-uv sync --extra hf
 ITSM_EMBEDDING_BACKEND=embeddings ITSM_SENTIMENT_BACKEND=transformer uv run itsm eval sentiment
-```
-
-The Presidio PII analyser is a separate extra - it pulls spaCy, not torch - and
-runs standalone so it can be benchmarked against the other two detectors on its
-own recognisers:
-
-```bash
-uv sync --extra presidio
-uv run python -m spacy download en_core_web_lg
 uv run itsm privacy eval --backend rules --backend transformer --backend presidio --isolate
 ```
+
+> **`uv sync` is a heavy install** - torch, spaCy, Presidio, GLiNER and Prophet
+> are all required, not optional. That is deliberate: the experiment notebooks
+> compare these approaches against each other, and an arm that can be missing is
+> an arm that silently drops out of a benchmark. Model weights download on first
+> use (~1 GB total) and the spaCy pipeline Presidio needs is fetched
+> automatically - no manual `spacy download` step.
 
 Poetry users: `poetry install && poetry run itsm --help` (the `pyproject.toml`
 is PEP 621, both tools read it).
@@ -86,6 +85,7 @@ detail and caveats in [`docs/06-results.md`](docs/06-results.md):
 | Sentiment (lexicon) | macro-F1 0.804, kappa 0.664; 87% recall on frustrated requesters at 61% precision |
 | Weak signals | all 4 injected anomalies caught, ~1.7 false alarms per 100 series-days, slow ramp flagged 12 days in |
 | Anonymisation | **0 of 2 087 personal values survive** in the output (rule engine), F1 0.9995, **zero utility cost** to the classifier |
+| Root-cause attribution | the injected surge is recovered as **one named sub-topic carrying 57% of the increase** (p ~ 0), with every other topic at <=5% |
 
 The dataset injects 7% label noise, 13% ambiguous wordings and 12% typos on
 purpose: without them every estimator scores a perfect 1.0 and the evaluation
@@ -101,7 +101,7 @@ src/itsm/
 ├── cli.py               # typer CLI, a thin shell over the pipelines
 ├── data/                # schema, public-dataset adapters, synthetic generator
 ├── text/                # normalisation and vectorisation (TF-IDF | embeddings)
-├── analysis/            # clustering + c-TF-IDF labelling, lifecycle statistics
+├── analysis/            # clustering, sub-topic discovery + growth attribution, lifecycle stats
 ├── privacy/             # PII detection (rules | HF NER | Presidio), entity-tag redaction, scoring
 ├── models/              # classifier, sentiment, weak-signal detector, artifact store
 ├── pipelines/           # train / evaluate / report, one run() each
@@ -125,6 +125,7 @@ None of them contains analysis logic, so they cannot drift apart.
 * [`docs/05-app.md`](docs/05-app.md) - Streamlit architecture, caching strategy, the six pages.
 * [`docs/06-results.md`](docs/06-results.md) - **what the models actually score**, and what those numbers do and do not mean.
 * [`docs/07-privacy.md`](docs/07-privacy.md) - **anonymisation**: what personal data is in the text, the three detectors, and how the result is measured.
+* [`docs/08-root-cause.md`](docs/08-root-cause.md) - **sub-topic tagging**: discovering what is below the declared category, and attributing a ticket increase to it.
 * [`docs/adr/0001-stack-and-baselines.md`](docs/adr/0001-stack-and-baselines.md) - why these choices.
 * [`docs/adr/0002-anonymisation.md`](docs/adr/0002-anonymisation.md) - why anonymisation is a pipeline stage with interchangeable detectors.
 

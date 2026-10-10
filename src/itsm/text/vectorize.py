@@ -20,6 +20,7 @@ component (classifier, clustering) is agnostic to the choice.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from functools import lru_cache
 from typing import Any, Literal
 
 import numpy as np
@@ -64,6 +65,21 @@ def build_tfidf(
     return FeatureUnion([("word", word), ("char", char)])
 
 
+@lru_cache(maxsize=2)
+def _load_encoder(model_name: str, device: str | None) -> Any:
+    """Load one sentence-transformer, cached for the life of the process.
+
+    A comparison builds several vectorisers over the same model - one per arm,
+    plus a refit on a second split - and each load costs seconds and a few
+    hundred megabytes. Caching by name means the weights are read once; the
+    cache is keyed on the arguments that change the weights, so a different
+    model or device still loads its own.
+    """
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(model_name, device=device)
+
+
 class EmbeddingVectorizer(BaseEstimator, TransformerMixin):
     """Sentence-transformer encoder with a scikit-learn interface.
 
@@ -91,9 +107,7 @@ class EmbeddingVectorizer(BaseEstimator, TransformerMixin):
 
     def _load(self) -> Any:
         if self._model is None:
-            from sentence_transformers import SentenceTransformer  # optional dependency
-
-            self._model = SentenceTransformer(self.model_name, device=self.device)
+            self._model = _load_encoder(self.model_name, self.device)
         return self._model
 
     def fit(self, x: Iterable[str], y: object = None) -> EmbeddingVectorizer:  # noqa: D102

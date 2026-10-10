@@ -18,7 +18,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DatasetName = Literal["synthetic", "csv", "huggingface", "uci_incident_log"]
 EmbeddingBackend = Literal["tfidf", "embeddings"]
 SentimentBackend = Literal["lexicon", "transformer"]
-AnonymisationBackend = Literal["rules", "transformer", "presidio"]
+AnonymisationBackend = Literal["rules", "transformer", "presidio", "gliner"]
 
 
 class Settings(BaseSettings):
@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     #: spaCy pipeline for that language. ``None`` uses the default known for
     #: the language; set it when that pipeline is not the one installed.
     presidio_spacy_model: str | None = None
+    #: Zero-shot GLiNER checkpoint. Multilingual and PII-tuned by default,
+    #: which is what an FR/EN ticket corpus needs.
+    gliner_model: str = "urchade/gliner_multi_pii-v1"
     #: When true, every pipeline reads the anonymised extract instead of the
     #: raw one. That is the switch a production deployment leaves on.
     use_anonymised: bool = False
@@ -84,6 +87,8 @@ class Settings(BaseSettings):
             return self.ner_model
         if backend == "presidio":
             return self.presidio_spacy_model
+        if backend == "gliner":
+            return self.gliner_model
         return None
 
 

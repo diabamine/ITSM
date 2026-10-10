@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ITSM Insights, Case Study</title>
+<style>
+  body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #000; line-height: 1.4; }
+  h1 { font-family: Calibri, Arial, sans-serif; font-size: 24pt; font-weight: bold; margin: 0 0 6pt; }
+  h2 { font-family: Calibri, Arial, sans-serif; font-size: 16pt; font-weight: bold; margin: 18pt 0 8pt; color: #1F4E79; }
+  h3 { font-family: Calibri, Arial, sans-serif; font-size: 13pt; font-weight: bold; margin: 14pt 0 6pt; color: #2E74B5; }
+  h4 { font-family: Calibri, Arial, sans-serif; font-size: 11.5pt; font-weight: bold; margin: 12pt 0 4pt; }
+  p { margin: 0 0 8pt; }
+  ul, ol { margin: 0 0 8pt 0; }
+  li { margin-bottom: 4pt; }
+  table { border-collapse: collapse; width: 100%; margin: 8pt 0 12pt; font-size: 10pt; }
+  th, td { border: 1px solid #999; padding: 5pt 6pt; text-align: left; vertical-align: top; }
+  th { background: #DEEAF6; font-weight: bold; }
+  .subtitle { font-size: 13pt; color: #444; margin-bottom: 18pt; }
+  .caption { font-size: 9.5pt; color: #555; font-style: italic; margin-top: 4pt; }
+  .note { font-size: 10.5pt; margin: 8pt 0 12pt 0; }
+</style>
+</head>
+<body>
+
+<h1>ITSM Insights</h1>
+<p class="subtitle">Structuring an IT support ticket flow: classification, similar case retrieval and weak signal detection</p>
+
+<table>
+  <tr><th style="width:25%">Client</th><td>Thales, IT Support</td></tr>
+  <tr><th>Programme</th><td>Ticketing (Weak signal analysis)</td></tr>
+  <tr><th>Prepared by</th><td>Diametral</td></tr>
+  <tr><th>Date</th><td>22 September 2026</td></tr>
+  <tr><th>Status</th><td>Design and benchmark protocol, pre-production</td></tr>
+</table>
+
+<h4>Scope of this document</h4>
+<p>This case study consolidates the problem framing and literature review held in Notion with the technical design and experimental protocol implemented in the <i>itsm-insights</i> codebase. It describes what was built, why each choice was made, and what has actually been measured. Throughout the document, results already obtained are separated explicitly from protocols that are defined but not yet executed.</p>
+
+<h4>Reading note on evidence</h4>
+<p>Two kinds of number appear in this document and they are never mixed. <b>Measured</b> results come from evaluation pipelines that have been run on the reference dataset, and are reported together with their protocol. <b>Protocol</b> means the experiment is designed, implemented and runnable, but has not yet been executed, and no figure is quoted for it. Section 3.3 labels every component accordingly.</p>
+
+<div style="page-break-before:always"></div>
+
+<h2>1. Problem statement</h2>
+
+<p>The IT support team receives a steady flow of tickets that is not structured by request family. The consequence is not a reporting gap but an operational one: the team cannot see recurring themes, cannot prioritise on anything other than arrival order, and cannot anticipate load.</p>
+
+<h3>1.1 Context and friction</h3>
+
+<p>Tickets arrive through an ITSM channel (tool, mail or form, the exact channel is still to be confirmed with the client) and follow a four step chain:</p>
+
+<ol>
+  <li><b>Emission.</b> The user files a ticket, in free text, through a channel that is not yet characterised.</li>
+  <li><b>Reception and qualification.</b> The support team assigns a priority and, where one exists, a category.</li>
+  <li><b>Handling or escalation.</b> Resolution by the support team, or escalation to a specialised IT team.</li>
+  <li><b>Closure.</b> With little or no structured capitalisation on the family or the root cause.</li>
+</ol>
+
+<p>The friction is concentrated at steps 2 and 4. At step 2 the qualification is manual and inconsistent. At step 4 the knowledge produced by resolving the ticket is not captured in any form that a future ticket can reuse. Everything downstream, meaning trend analysis, prioritisation and load anticipation, is blocked by those two steps.</p>
+
+<p class="note"><i>This chain is a working hypothesis to be validated with the team. The open points (tool, available fields, existing categorisation) are tracked on the project Questions page and are revisited in section 3.4.</i></p>
+
+<h3>1.2 Stakeholders and pain points</h3>
+
+<p>The problem is worth stating per audience, because the four stakeholders want different things and a single deliverable will not serve all of them equally.</p>
+
+<table>
+  <tr><th style="width:24%">For whom</th><th style="width:38%">Problem</th><th>What would resolve it</th></tr>
+  <tr>
+    <td><b>IT support team</b><br>(ticket handling)</td>
+    <td>Ticket volume not categorised in a usable way. No consolidated view of recurring families. Prioritisation done as tickets arrive.</td>
+    <td>Classification into families, plus regular reporting of trends per family.</td>
+  </tr>
+  <tr>
+    <td><b>Support management</b><br>(N+1 and N+2)</td>
+    <td>No forward visibility on load peaks. Recurring or strained topics are discovered reactively, after the fact.</td>
+    <td>Weak signals and alerts on critical families, to anticipate incoming load.</td>
+  </tr>
+  <tr>
+    <td><b>Receiving IT teams</b><br>(infrastructure, application, network)</td>
+    <td>Repeated solicitations on similar subjects, with no capitalisation on root causes.</td>
+    <td>Identification of recurring families, to direct targeted corrective or preventive action.</td>
+  </tr>
+  <tr>
+    <td><b>Internal users</b><br>(ticket emitters)</td>
+    <td>Resolution time potentially lengthened when an unanticipated load peak hits.</td>
+    <td>Better anticipation of the resources to mobilise ahead of a foreseeable peak.</td>
+  </tr>
+</table>
+
+<p><b>Why this framing matters.</b> The four rows are not one product. Agent assist (classification and suggestion), management analytics (families and alerts) and preventive action (root causes) have different buyers, different success metrics and different failure modes. Section 3.4 returns to this point: attempting all three at once is a programme, whereas each one alone is a deliverable.</p>
+
+<h3>1.3 Objectives</h3>
+
+<p>The mission is phased. Phase 2 depends on Phase 1 in a hard sense, because weak signal detection on a family that has not been stabilised measures noise.</p>
+
+<table>
+  <tr><th style="width:20%">Phase</th><th>Objective</th></tr>
+  <tr><td rowspan="4"><b>Phase 1</b><br>Exploratory analysis</td><td>Identify the format and source of the ticket history (export, ITSM database, other).</td></tr>
+  <tr><td>Carry out an exploratory analysis covering volumetry, seasonality, channels, priorities and receiving teams.</td></tr>
+  <tr><td>Define and validate the main ticket families with the teams, through classification or clustering.</td></tr>
+  <tr><td>Identify, among those families, the most critical ones by business impact, recurrence and handling cost.</td></tr>
+  <tr><td rowspan="2"><b>Phase 2</b><br>Weak signals</td><td>Design a weak signal detection method per critical family, covering frequency evolution and trend breaks.</td></tr>
+  <tr><td>Build an alerting model on temporal trends to anticipate load peaks.</td></tr>
+  <tr><td><b>Transverse</b></td><td>Put in place regular, legible reporting for management.</td></tr>
+</table>
+
+<div style="page-break-before:always"></div>
+
+<h2>2. Literature review</h2>
+
+<p>Two bodies of work inform this project, and they are at very different stages of maturity. Ticket classification is a solved engineering problem with a well known failure mode. Weak signal detection on ticket volume is a much thinner literature, borrowed largely from strategic management and from AIOps vendor practice.</p>
+
+<h3>2.1 Automatic classification of IT tickets</h3>
+
+<h4>Microsoft CSE and Endava, classical NLP pipeline</h4>
+<p><b>Problem.</b> Helpdesk operators spent significant time manually qualifying each ticket across five properties: type, service, category, impact and urgency.</p>
+<p><b>Approach.</b> A classical NLP pipeline (text cleaning, stop word removal, TF-IDF vectorisation) followed by Naive Bayes and SVM classifiers from scikit-learn, with hyper-parameters tuned by grid search, served as a Flask API on Azure.</p>
+<p><b>Result.</b> About <b>96 percent accuracy</b> on ticket type, where classes are well balanced. Performance was markedly degraded on urgency and impact, which are heavily imbalanced, with a single dominant class representing 70 to 90 percent of cases.</p>
+<p><b>Key lesson.</b> Data quality and class balance weigh more on the outcome than the choice of algorithm. An imbalanced target makes a global metric actively misleading.</p>
+
+<h4>Enterprise study, 87 859 multilingual tickets (Systems, 2026)</h4>
+<p><b>Context.</b> A real company ITSM history from an on-premise SQL database. Tickets are mostly in Lithuanian with some English, spread over 9 request types and 11 receiving teams.</p>
+<p><b>Approach.</b> A logistic regression over TF-IDF with a 10 000 term vocabulary, compared against a fine-tuned multilingual BERT. Class imbalance was handled by oversampling minority classes during diagnosis, while keeping the natural distribution at test time.</p>
+<p><b>Result.</b> Logistic regression reached <b>macro-F1 0.78</b> and weighted F1 0.81, performing well on frequent categories. BERT reached a higher macro-F1, with precision and recall around <b>0.92</b> on semantically complex requests.</p>
+<p><b>Author recommendations.</b> Keep a final human review on ambiguous cases. Prefer macro-F1 over global accuracy so that rare families are properly evaluated. Reserve transformer models for semantically complex cases, and keep simple models where compute is constrained.</p>
+
+<h4>DevRev, the cost of mis-routing</h4>
+<p>This industry panorama is useful less for its method than for its quantification of the problem. An organisation handling <b>2 000 tickets per month with a 35 percent mis-routing rate</b> can lose the equivalent of <b>329 000 dollars per year</b>, and each reassignment adds on average <b>47 minutes</b> to resolution time. The article distinguishes three generations of triage: keyword rules (rigid), machine learning and NLP classification (more accurate, but limited to classifying), then knowledge graphs and autonomous agents (contextual, able to act rather than only label). Reported client outcomes include Bolt, whose mean resolution time fell from 129.8 hours to 62.7 hours over 11 months, and Descope, with a 54 percent reduction in resolution time and no added headcount.</p>
+
+<h3>2.2 Weak signals, theory and practice</h3>
+
+<p>The notion of a weak signal comes from strategic management (Igor Ansoff, 1975). It denotes early information, still ambiguous or incomplete, that announces a change before it becomes a strong signal, that is to say obvious but usually too late to act on preventively.</p>
+
+<p>Transposed to IT tickets, a discreet evolution in the frequency or nature of tickets on a given family can announce a service degradation or an incoming load peak, before it becomes a major incident or a visible team overload.</p>
+
+<h4>Zoho Desk (Zia), anomaly prediction on ticket volume</h4>
+<p>The daily inbound and outbound ticket volume is compared against a trend computed over the previous 30 days. An anomaly fires only when <b>two criteria hold simultaneously</b>: a volume threshold (for example 25, 50 or 100 tickets) and a relative deviation threshold against the trend (for example 10, 25 or 50 percent).</p>
+<p><b>Key lesson.</b> A weak signal is a significant deviation from a recent baseline, not an absolute threshold. Combining a volume floor with a relative deviation test is what keeps the false positive rate tolerable.</p>
+
+<h4>PagerDuty, AIOps event correlation</h4>
+<p>Events are correlated by context, timing or topology to reduce noise. Fine grained behavioural anomaly detection then allows preventive intervention before user impact. The vendor claims up to 91 percent reduction in alert noise. The transferable idea is the ordering: reduce noise first, detect second.</p>
+
+<h4>IBM Cloud Pak for AIOps</h4>
+<p>Large scale aggregation and correlation of IT events, so that only relevant signals surface before root cause analysis. It was originally aimed at infrastructure telemetry rather than support tickets, but the principle of filtering a weak signal out of a voluminous and noisy stream transposes directly.</p>
+
+<h4>Supportbench, forecasting without a data team</h4>
+<p>A 13 week moving average of volume per channel, adjusted by scope growth (active accounts and users) and by pre-identified business events such as a product release, a migration or a renewal, whose impact is measured. The formula is: forecast equals the 13 week mean multiplied by one plus growth, plus the event effect. The forecast is then converted into a staffing need.</p>
+<p><b>Key lesson.</b> A cheap and explainable method, meaning a spreadsheet and roughly 30 minutes a month, already gives useful anticipation. It is the baseline that any sophisticated model has to beat before it earns its complexity.</p>
+
+<h3>2.3 What the literature settles, and what it does not</h3>
+
+<p>Five conclusions were carried directly into the design:</p>
+
+<ol>
+  <li><b>Start simple.</b> TF-IDF plus a linear model already performs well on frequent, well defined families. Heavier models such as BERT or an LLM are for the ambiguous or semantically complex residue, and they must be measured against the cheap baseline rather than assumed to beat it.</li>
+  <li><b>Expect imbalance and choose the metric accordingly.</b> Imbalance is the norm in this data, not the exception. Macro-F1 is the headline metric, never global accuracy.</li>
+  <li><b>Keep a human checkpoint on low confidence cases</b> rather than targeting full automation. This became the abstention threshold and the coverage curve described in section 3.3.</li>
+  <li><b>Detect deviation from a recent baseline</b>, combining two criteria, rather than crossing an absolute threshold.</li>
+  <li><b>Quantify the current cost of mis-routing</b> in order to objectify the expected gain. The DevRev figures give both an order of magnitude and a method.</li>
+</ol>
+
+<p><b>What the literature does not settle.</b> None of the reviewed sources publishes a false alarm rate per series-day for ticket volume anomaly detection, nor a detection delay on slow ramps. Vendor claims such as a 91 percent noise reduction or a given share of autonomous resolution are not measurements that can be reproduced or compared. This is precisely the gap that the benchmark protocol in section 3.3 is designed to fill for this specific corpus, with ground truth.</p>
+
+<div style="page-break-before:always"></div>
+
+<h2>3. Design architecture</h2>
+
+<h3>3.1 Solution overview</h3>
+
+<p>The solution is a single pipeline feeding three deliverables: classify the incoming ticket, retrieve the cases already solved the same way, and monitor each family volume for early signs of degradation.</p>
+
+<p><img src="architecture.png" width="660"></p>
+<p class="caption">Figure 1. Target architecture. Solid borders are implemented. Dashed borders are designed and benchmarked, but not yet in the shipped service.</p>
+
+<h4>Four design decisions worth defending</h4>
+
+<p><b>The privacy gate is step zero, not a feature.</b> Ticket free text is the one field nobody controls, and it routinely contains a colleague name, a callback number, a mailbox or a staff number. None of it was collected on purpose, all of it is personal data, and it sits in the exact column every model reads. Anonymisation therefore sits on the path. It is the only door between the raw zone and everything else, and its leak rate is measured against ground truth rather than asserted.</p>
+
+<p><b>Two clocks, not one.</b> Suggestion is synchronous at ticket submit, under one second, and availability critical. Detection is a scheduled job, taking minutes and restartable. These are different runtimes with different service levels and different failure modes. Drawing them on one plane is the most common source of late surprise in this kind of design.</p>
+
+<p><b>Abstention is part of the product.</b> Routing is automated only above a confidence threshold. Below it, the ticket goes to human triage with the top three categories proposed. This follows directly from the recommendation in the literature to keep a human checkpoint, and it is what the coverage curve in section 3.3 exists to calibrate.</p>
+
+<p><b>The feedback loop is not optional.</b> The agent accept or correct decision returns to the store as the next training label. Without it the model never improves, production accuracy is never measured (only offline accuracy on a frozen split), and retrieval quality remains an opinion. A reassignment after an auto-route is a free negative label and is captured too.</p>
+
+<h3>3.2 The dummy dataset</h3>
+
+<p>No client extract was available at design time, and no public corpus is adequate. The three things that ITSM analytics needs at once, namely free text, a taxonomy and an audit trail, are never published together, because the first two are confidential and the third is meaningless without them.</p>
+
+<table>
+  <tr><th>Source</th><th>Free text</th><th>Taxonomy</th><th>Audit trail</th><th>Verdict</th></tr>
+  <tr><td>UCI 498, incident event log</td><td>anonymised codes</td><td>anonymised codes</td><td>yes, 141 712 events</td><td>lifecycle and time series, no NLP</td></tr>
+  <tr><td>customer-support-tickets (Hugging Face)</td><td>yes, multilingual</td><td>yes</td><td>no</td><td>NLP works, no flow and no series</td></tr>
+  <tr><td>Kaggle IT support exports</td><td>yes</td><td>yes</td><td>no</td><td>same limitation</td></tr>
+</table>
+
+<p><b>Decision.</b> Support all of them behind one canonical schema, and add a seeded synthetic generator as the default, so that the project is runnable offline on day one, with ground truth for the parts that would otherwise be unevaluable.</p>
+
+<p><b>This is not a shortcut around real data.</b> It is what makes the evaluation meaningful. The generator knows which tickets belong to which family (ground truth for clustering), which mood produced which wording (ground truth for sentiment), where it planted each personal identifier (ground truth for anonymisation, at character offset precision) and when it injected an anomaly (ground truth for weak signal detection, which is otherwise impossible to score at all).</p>
+
+<h4>What the generator simulates</h4>
+
+<p>The reference dataset holds <b>7 897 tickets over 12 categories, in French and English</b>, driven by a catalogue of 12 families with slot filled templates, assignment groups, per family priority profiles and handling times.</p>
+
+<ul>
+  <li><b>Arrivals.</b> A Poisson process whose daily intensity is the product of a family weight (access and accounts is 17 percent of volume, databases 4 percent), a weekday profile (Monday plus 30 percent, Saturday minus 86 percent), a yearly profile (August trough, September peak), a growth trend of 12 percent per year, per family effects such as password resets multiplied by 1.9 on Mondays, and the injected anomalies.</li>
+  <li><b>Lifecycle.</b> A state machine per ticket, with log normal assignment delays and handling times scaled by priority. 8 percent of tickets are misrouted and generate an extra reassignment, 25 percent pass through an Awaiting User Info phase, and 3 percent get stuck 6 to 30 times longer than normal, which is the vendor, spare part and silent user tail that every desk carries. Reopens are drawn with a probability that grows with the number of reassignments. Anything resolving after the extraction horizon stays open, which reproduces the backlog that a real extract contains.</li>
+  <li><b>Wording and mood.</b> The requester mood is drawn from how badly the ticket went (reopened, breached, reassigned, critical) and then determines the phrasing. That direction matters, because the model must recover the mood from the text alone, and the label is not a function of any feature it sees.</li>
+  <li><b>Difficulty.</b> The dataset deliberately injects <b>7 percent label noise, 13 percent ambiguous wordings and 12 percent typos</b>. Drawn from clean disjoint templates, the data would be perfectly separable, every model would score near 1.0, and the benchmark would measure nothing.</li>
+</ul>
+
+<p><b>The limit to keep in view.</b> A generator reproduces the structure its author encoded and nothing else. Real ticket text is messier, more multilingual, more sarcastic, and contains failure modes nobody anticipated. Every figure in section 3.3 is therefore a relative comparison between approaches on a common footing, not a forecast of production performance. The moment a real extract is available, pointing the dataset setting at it runs the same pipelines without change.</p>
+
+<div style="page-break-before:always"></div>
+
+<h3>3.3 Component benchmarks</h3>
+
+<p>Each component of the architecture has its own experiment notebook, with one question, several competing approaches measured on identical data, and one metric nominated in advance as the one that decides. The notebooks are the project documentation of why each production choice was made.</p>
+
+<p>A shared methodological rule runs through all five: <b>every approach runs in isolation</b>. Where a production configuration composes two techniques, for example the NER model with the rule engine, the benchmark deliberately un-composes them, because a composed detector cannot be measured. A gap in one layer is covered by the other, and the score reports the union rather than the tool. Isolation is how the choice is made, composition is what ships.</p>
+
+<table>
+  <tr><th style="width:5%">No.</th><th style="width:23%">Component</th><th style="width:37%">Approaches compared</th><th>Metric that decides</th></tr>
+  <tr><td>1</td><td><b>PII anonymisation</b></td><td>rule engine, HF NER, Presidio, GLiNER (zero shot)</td><td>residual personal values in the output</td></tr>
+  <tr><td>2</td><td><b>Weak signals</b></td><td>fixed threshold, robust baseline with EWMA, Prophet</td><td>recall together with false alarms per 100 series-days</td></tr>
+  <tr><td>3</td><td><b>Category classification</b></td><td>majority, Naive Bayes, logistic, SVM, embeddings with LR, LLM</td><td>macro-F1, then the coverage curve</td></tr>
+  <tr><td>4</td><td><b>Sentiment</b></td><td>lexicon, transformer, LLM</td><td>recall on the negative class at usable precision</td></tr>
+  <tr><td>5</td><td><b>Similar case retrieval</b></td><td>BM25, dense, hybrid with rank fusion</td><td>hit rate at 5</td></tr>
+</table>
+
+<h4>Notebook 1. PII anonymisation (measured)</h4>
+<p><b>Question.</b> Which detector removes the personal data, at what cost, and what does each one miss?</p>
+<p><b>Protocol.</b> Four detectors run standalone over the same sample. Detection is scored against character offset ground truth. Separately, the original values are searched for in the rewritten text, which is the only number that cannot be gamed by generous span matching.</p>
+
+<table>
+  <tr><th>Measured on 2 000 tickets and 2 087 annotated values</th><th>Rule engine</th><th>HF NER</th></tr>
+  <tr><td>Coverage recall</td><td>1.000</td><td>0.999</td></tr>
+  <tr><td>Precision</td><td>0.999</td><td>0.976</td></tr>
+  <tr><td>F1</td><td>0.9995</td><td>0.987</td></tr>
+  <tr><td>Leak rate, direct identifiers</td><td>0.000</td><td>0.0012</td></tr>
+  <tr><td><b>Residual PII in the output</b></td><td><b>0 of 2 087</b></td><td>2 of 2 087</td></tr>
+  <tr><td>False positive spans</td><td>2</td><td>50</td></tr>
+  <tr><td>Utility cost to the classifier (macro-F1)</td><td>0.000</td><td>minus 0.001</td></tr>
+</table>
+
+<p><b>The table above is rigged, and saying so is not enough.</b> The generator samples names from the same catalogue that the rule engine gazetteer is built from, so its recall on person names is near perfect by construction. A dedicated probe therefore re-runs each detector on twelve invented names spanning naming traditions that no French or English list covers. The rule engine scores 0.667 and the transformer 0.944. That 33 percent miss rate on real names is the number that decides deployment, not the headline F1. Presidio and GLiNER are implemented and wired into the same evaluation, but their columns are protocol and have not yet been run.</p>
+
+<p><b>Conclusion carried into the design.</b> The answer is not to pick one detector, but to take formats from the rule layer and names from whichever model wins the unseen name probe. Structured identifiers such as IBAN, email and national ID are shapes, and a regular expression wins on them permanently. Names are language, and a model wins. The shipped transformer backend composes the two.</p>
+
+<h4>Notebook 2. Weak signal detection (measured)</h4>
+<p><b>Question.</b> Given volume per family per day, which detector raises the outage, how early, and how often does it cry wolf?</p>
+<p><b>Protocol.</b> Three detectors score the same series against the generator anomaly manifest. Two metrics decide, and neither is accuracy. The first is false alarms per 100 series-days, because precision alone is misleading: a detector firing for six days on one real outage looks precise. The second is detection delay, because a detector that finds the outage on day five is a post-mortem tool.</p>
+
+<table>
+  <tr><th>Measured on the reference dataset</th><th style="width:25%">Result</th></tr>
+  <tr><td>Injected anomalies caught</td><td>4 of 4</td></tr>
+  <tr><td>False alarms per 100 series-days</td><td>about 1.7</td></tr>
+  <tr><td>Slow ramp, detection delay</td><td>12 days in</td></tr>
+</table>
+
+<p>The slow ramp is the whole argument for the approach. A sudden spike is easy and any threshold catches it. A 15 percent daily drift, where no single day is unusual, can only be caught by an accumulating statistic, which is what the EWMA arm provides. The fixed threshold and Prophet arms are implemented as challengers but have not yet been run. The honest framing is that if the fixed threshold matches the EWMA detector, then the fixed threshold wins, because it has no dependency and anyone can explain it at three in the morning.</p>
+
+<p><b>The decision upstream of the detector</b> is the series grain: per category, per configuration item, or per site. It sets the false alarm rate before a line of code runs. Too fine and every series is noise, too coarse and a real outage disappears into the total. The notebook sweeps it explicitly.</p>
+
+<h4>Notebook 3. Category classification (measured)</h4>
+<p><b>Question.</b> Does an LLM beat a linear model over n-grams, and by enough to pay for itself?</p>
+<p><b>Protocol.</b> Six approaches on an identical temporal split, training on the past and testing on the most recent 20 percent. A random split flatters every model equally and predicts nothing about next month. The gap between the two splits is itself the drift estimate. The headline is macro-F1, never accuracy.</p>
+
+<table>
+  <tr><th>Measured on 7 897 tickets and 12 categories</th><th style="width:25%">Result</th></tr>
+  <tr><td>Calibrated LinearSVC over word and character TF-IDF, macro-F1</td><td>0.864</td></tr>
+  <tr><td>Majority class baseline, macro-F1</td><td>0.027</td></tr>
+  <tr><td>Volume auto-routable above 0.8 confidence</td><td>about 90 percent</td></tr>
+  <tr><td>Accuracy on that auto-routed volume</td><td>about 93 percent</td></tr>
+</table>
+
+<p>The majority baseline is in the table on purpose. A macro-F1 that does not clearly beat it means the pipeline is broken, not that the task is hard.</p>
+
+<p><b>The coverage curve is the metric a service desk actually buys.</b> The question is not how accurate the model is, but what share of tickets can be auto-routed at 95 percent accuracy and how many still need a human. This is why calibration matters more than the last point of macro-F1, and why an approach that cannot produce a comparable confidence is not comparable on the decisive axis.</p>
+
+<p><b>On the LLM arm.</b> It is implemented with the answer constrained to the taxonomy by a JSON schema, so that the error rate measures the model rather than a parser, and it is asked for a confidence so that it can appear on the coverage curve. It remains protocol, gated behind an explicit flag, because it is the only component that leaves the machine and the only one with a per ticket bill, which the notebook prices before spending anything. Where an LLM genuinely wins, and where this table will not show it, is the cold start: with no labelled history, the linear arms cannot be trained at all.</p>
+
+<h4>Notebook 4. Sentiment (measured)</h4>
+<p><b>Question.</b> Which analyser finds the frustrated requester early enough to act?</p>
+<p><b>Protocol.</b> This is a triage signal, not an analytics number, and the cost is asymmetric. A missed frustrated requester is an escalation, whereas a false positive is thirty seconds of an agent attention. The headline is therefore recall on the negative class, at a precision the desk can live with. Kappa is the aggregate, because the distribution is heavily neutral and accuracy would reward an analyser for calling everything neutral.</p>
+
+<table>
+  <tr><th>Measured, lexicon analyser</th><th style="width:25%">Result</th></tr>
+  <tr><td>Macro-F1</td><td>0.804</td></tr>
+  <tr><td>Cohen kappa</td><td>0.664</td></tr>
+  <tr><td>Recall on frustrated requesters</td><td>87 percent</td></tr>
+  <tr><td>Precision at that recall</td><td>61 percent</td></tr>
+</table>
+
+<p><b>The ceiling here is the label, not the model.</b> There are no human sentiment labels. The reference is a weak label derived from signals correlated with frustration, such as reopen count, escalation, breached service level and reassignment churn, rather than from anyone reading the ticket. Every score measures agreement with that heuristic, and an analyser can only look good by resembling it. Before this drives anything user visible, 300 tickets should be annotated by hand, by two annotators, with an inter-annotator agreement figure. That is the real ceiling, and without it there is no way to know whether a kappa of 0.66 is good.</p>
+
+<h4>Notebook 5. Similar case retrieval (protocol)</h4>
+<p><b>Question.</b> Put the K resolved tickets closest to a new one in front of the agent. Which retriever finds them?</p>
+<p><b>Protocol.</b> The corpus is resolved tickets from the past and the queries are later tickets, because a random split would let a retriever find a near duplicate filed the same afternoon. Fusion is on ranks rather than scores: BM25 is unbounded and cosine lives between minus one and one, so normalising them onto a common scale means inventing a mapping that changes with every query. Reciprocal rank fusion uses only position.</p>
+
+<p>The headline is hit rate at 5 rather than recall at 5. The agent sees five cases, and whether that panel contained anything useful is the experience. Recall over a relevant set of 200 same category tickets is not.</p>
+
+<p><b>Two caveats that outrank the numbers.</b> First, the relevance labels are a proxy. Nobody has judged which resolved ticket is genuinely useful for a new one, so a case counts as relevant when it shares the new ticket category and subcategory. That rewards topical similarity, which is not the same as a resolution that transfers. Second, the load bearing question is upstream. Retrieval and mitigation suggestion both assume a populated resolution field, and in most real ITSM exports the close notes are empty or boilerplate. Sampling 200 closed tickets and reading the close notes is a one day check that decides roughly a quarter of the work, and it has to happen before any of this is built.</p>
+
+<div style="page-break-before:always"></div>
+
+<h3>3.4 Limits</h3>
+
+<p>The limits fall into four groups, ordered by how much they could change the plan.</p>
+
+<h4>A. Data, the binding constraint</h4>
+<ul>
+  <li><b>No client data has been seen.</b> Everything measured here runs on a synthetic corpus. The figures are valid as relative comparisons between approaches, but they are not a forecast of production performance.</li>
+  <li><b>Resolution text may not exist.</b> If close notes are empty or boilerplate, which is the common case, the retrieval and suggestion components have nothing to work with regardless of retriever quality.</li>
+  <li><b>The ticketing tool, exportable fields and history depth are unknown</b>, along with whether any categorisation already exists that could serve as a weak label. These are open items on the project Questions page.</li>
+  <li><b>Confirmed constraint.</b> Tickets do contain personal data, first names at minimum, which is what makes the anonymisation gate mandatory rather than optional.</li>
+</ul>
+
+<h4>B. Method</h4>
+<ul>
+  <li><b>No human labels for sentiment, and no human relevance judgements for retrieval.</b> Both are scored against proxies, and both proxies could be wrong in the same direction as the models that fit them.</li>
+  <li><b>The unseen name probe is small and synthetic.</b> Twelve names in six sentence frames proves a direction, not a number.</li>
+  <li><b>One prompt, one embedding model and one fusion constant</b> were tested where several should be swept. Prompt wording is usually a larger lever than model choice, and no sweep has been run.</li>
+  <li><b>Prophet is scored in sample</b> in the weak signal comparison, which flatters it relative to the causal detectors it competes with.</li>
+</ul>
+
+<h4>C. Architecture and operations</h4>
+<ul>
+  <li><b>The multilingual constraint is real and under-priced.</b> Mixed French and English text forces a multilingual embedding model, a bilingual PII detector and a language aware lexical index. Presidio in particular is configured for one language at a time, and this corpus is two.</li>
+  <li><b>No deployment view yet.</b> Volumes, per hop latency budget, data contracts with the ITSM tool, and who is on call for a false alert are all undefined. An alert nobody routes is not an alert.</li>
+  <li><b>Weak signal preconditions are hard.</b> Six to eight weeks of history per series are needed before any threshold means anything, and enough volume per series that a Poisson rule is not firing on two tickets.</li>
+  <li><b>The prediction horizon and the acceptable false positive rate have not been agreed with the client</b>, and these two numbers determine the design of the detector rather than the reverse.</li>
+</ul>
+
+<h4>D. Scope</h4>
+<ul>
+  <li><b>Three products are currently entangled.</b> Agent assist, manager analytics and API integration have different buyers and different success criteria. Either of the two pipelines alone is a deliverable, but both at once is a programme.</li>
+  <li><b>Phase 2 depends on Phase 1 in a hard sense.</b> Weak signal detection on families that have not been stabilised and validated with the team measures noise, however good the detector.</li>
+</ul>
+
+<div style="page-break-before:always"></div>
+
+<h2>4. Conclusion</h2>
+
+<p>The work delivers a complete and runnable design for structuring the ticket flow, with each component technical choice justified by a measurement rather than by convention, and with the boundary between what is proven and what is assumed drawn explicitly.</p>
+
+<h3>What is established</h3>
+
+<p><b>The approach is viable and the cheap methods go further than expected.</b> Category classification reaches macro-F1 0.864 against a 0.027 baseline, with around 90 percent of volume auto-routable at about 93 percent accuracy, using a calibrated linear model over TF-IDF that trains in seconds on CPU and can be asked which n-grams drove a decision. Weak signal detection catches all four injected anomalies at roughly 1.7 false alarms per 100 series-days, and flags a slow ramp twelve days in. Anonymisation leaves zero of 2 087 personal values in the output, at no measurable utility cost to the downstream classifier.</p>
+
+<p><b>The evaluation protocol is the real asset.</b> It provides ground truth for anomalies, character offset ground truth for PII, an honest temporal split, a coverage curve that converts a model score into an operational decision, and an unseen name probe that deliberately breaks the benchmark own favourable bias. These transfer to the client data unchanged. The models will be retrained, the protocol will not.</p>
+
+<h3>What must happen next, in order</h3>
+
+<ol>
+  <li><b>Answer the data questions.</b> Tool, export format, available fields, history depth and existing categorisation. Nothing downstream can be sized without them.</li>
+  <li><b>Sample 200 closed tickets and read the close notes.</b> One day of work that determines whether the retrieval and suggestion components are buildable at all.</li>
+  <li><b>Agree the two numbers that design the detector</b>, namely the prediction horizon for a load alert and the acceptable false positive rate.</li>
+  <li><b>Annotate a few hundred real tickets</b>, covering PII spans and sentiment, with two annotators, to replace the synthetic ground truth where it matters most.</li>
+  <li><b>Run the five benchmarks on the real extract</b> and pick per component. The comparison harness is written, only the data is missing.</li>
+  <li><b>Ship one product first.</b> The recommendation is agent side classification with abstention. It is the most mature component, it has the clearest metric, and it generates the labelled feedback that every other component depends on.</li>
+</ol>
+
+<p><b>The honest summary.</b> The architecture is designed, the components are implemented, and the evaluation protocol is sound and partially executed. What is not yet established is anything about this client tickets, and the sequence above is deliberately ordered so that the cheapest checks come first and can still change the plan.</p>
+
+<p class="note"><i>Sources: project Notion space (Problem statement, Solutions and Results, Questions, and the two literature review documents) and the itsm-insights repository (docs/01-data.md, 03-modeling.md, 06-results.md, 07-privacy.md, and the five experiment notebooks under notebooks/).</i></p>
+
+</body>
+</html>

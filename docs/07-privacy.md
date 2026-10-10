@@ -116,10 +116,14 @@ data and whose redaction would destroy the vocabulary the classifier lives on.
 ### C. Presidio - the standard analyser (`itsm/privacy/presidio.py`)
 
 ```bash
-uv sync --extra presidio
-uv run python -m spacy download en_core_web_lg    # or fr_core_news_lg
 ITSM_ANONYMISATION_BACKEND=presidio uv run itsm privacy anonymise
 ```
+
+Presidio and its spaCy pipeline are mandatory dependencies; the pipeline
+(`en_core_web_md` by default, `fr_core_news_md` for French) is downloaded on
+first use. `md` rather than `lg` costs a little `PERSON` recall for a tenth of
+the download - set `ITSM_PRESIDIO_SPACY_MODEL=en_core_web_lg` and re-run the
+evaluation to price that.
 
 Microsoft Presidio's `AnalyzerEngine` runs a spaCy pipeline for the entities
 that need language understanding and pattern recognisers for the ones that have

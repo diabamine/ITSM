@@ -24,23 +24,24 @@ dependencies = [
     "altair>=5.4",
     "umap-learn>=0.5.7",
     "hdbscan>=0.8.39",
+    "matplotlib>=3.11.2",
+    # --- every arm of every experiment notebook, mandatory ------------------
+    # These were optional extras. They are required now so no comparison can
+    # silently skip an arm: a benchmark missing a competitor is not a
+    # benchmark. The cost is a heavy install (torch dominates) and a first run
+    # that downloads model weights; both are one-time.
+    "sentence-transformers>=3.3",   # dense embeddings (notebooks 3, 5)
+    "transformers>=4.46",           # HF NER + sentiment (notebooks 1, 4)
+    "torch>=2.4",                   # backs both of the above
+    "presidio-analyzer>=2.2",       # PII analyser (notebook 1)
+    "spacy>=3.7",                   # Presidio's NLP engine
+    "gliner>=0.2.13",               # zero-shot PII (notebook 1)
+    "prophet>=1.1.5",               # forecasting detector (notebook 2)
+    "anthropic>=1.0",               # LLM arm (notebooks 3, 4)
+    "jupyter>=1.1",                 # to run the notebooks at all
 ]
 
 [project.optional-dependencies]
-# Transformer backends. Optional on purpose: every default code path is
-# CPU-only, offline and scikit-learn based (see docs/03-modeling.md).
-hf = [
-    "sentence-transformers>=3.3",
-    "transformers>=4.46",
-    "torch>=2.4",
-]
-# Microsoft Presidio PII analyser. Separate from `hf`: it pulls spaCy, not
-# torch, and the spaCy pipeline itself is a one-time `python -m spacy download`
-# (see docs/07-privacy.md).
-presidio = [
-    "presidio-analyzer>=2.2",
-    "spacy>=3.7",
-]
 # Public dataset adapters (Hugging Face Hub / UCI archives).
 datasets = ["datasets>=3.1", "requests>=2.32"]
 
