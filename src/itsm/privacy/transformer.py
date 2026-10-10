@@ -23,6 +23,7 @@ deployment.
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from itsm.logging import get_logger
@@ -43,6 +44,23 @@ TAG_MAP: dict[str, EntityType] = {
     "LOC": EntityType.ADDRESS,
     "LOCATION": EntityType.ADDRESS,
 }
+
+
+@lru_cache(maxsize=4)
+def _load_pipeline(model_name: str, device: str | None) -> Any:
+    """Load one token-classification pipeline, cached for the process.
+
+    Checkpoint loading costs seconds. The evaluation constructs a recogniser
+    more than once - the corpus run and the unseen-name probe are separate
+    objects - so without this the same weights are read from disk twice.
+    """
+    from transformers import pipeline
+
+    logger.info("loading NER model %s", model_name)
+    kwargs: dict[str, Any] = {"aggregation_strategy": "simple"}
+    if device is not None:
+        kwargs["device"] = device
+    return pipeline("token-classification", model=model_name, **kwargs)
 
 
 class TransformerRecognizer:
@@ -83,22 +101,9 @@ class TransformerRecognizer:
         self._structural = RuleBasedRecognizer(detect_persons=False)
 
     def _load(self) -> Any:
-        """Load the pipeline on first use, with an actionable error."""
-        if self._pipeline is not None:
-            return self._pipeline
-        try:
-            from transformers import pipeline
-        except ImportError as error:  # pragma: no cover - depends on the extra
-            raise RuntimeError(
-                "the transformer backend needs the optional dependencies: "
-                "`uv sync --extra hf`. The rule-based backend needs nothing."
-            ) from error
-
-        logger.info("loading NER model %s", self.model_name)
-        kwargs: dict[str, Any] = {"aggregation_strategy": "simple"}
-        if self.device is not None:
-            kwargs["device"] = self.device
-        self._pipeline = pipeline("token-classification", model=self.model_name, **kwargs)
+        """Return the pipeline, loading it at most once per process."""
+        if self._pipeline is None:
+            self._pipeline = _load_pipeline(self.model_name, self.device)
         return self._pipeline
 
     def _to_spans(self, text: str, entities: list[dict[str, Any]]) -> list[PiiSpan]:

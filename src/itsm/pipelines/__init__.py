@@ -9,6 +9,7 @@ from itsm.pipelines import (
     eval_privacy,
     eval_sentiment,
     eval_weak_signal,
+    root_cause,
     run_analysis,
     train_classifier,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "eval_sentiment",
     "eval_weak_signal",
     "read_report",
+    "root_cause",
     "run_analysis",
     "train_classifier",
     "write_report",

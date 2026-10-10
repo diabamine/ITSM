@@ -37,12 +37,13 @@ pipeline loses the French-only names, and the per-entity evaluation in
 ``docs/07-privacy.md`` is where that shows up. Set ``ITSM_PRESIDIO_LANGUAGE``
 and, if the default is not installed, ``ITSM_PRESIDIO_SPACY_MODEL``.
 
-Requires the ``presidio`` extra and a one-time spaCy model download - the trade
-against the rule engine, which needs neither.
+The spaCy pipeline is fetched automatically on first use, so no manual step
+stands between a clone and a comparison.
 """
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 from itsm.logging import get_logger
@@ -56,11 +57,15 @@ DEFAULT_LANGUAGE = "en"
 #: spaCy pipeline used for a language when none is configured. The large
 #: models are named because the small ones cost noticeably more ``PERSON``
 #: recall; either works, and ``ITSM_PRESIDIO_SPACY_MODEL`` overrides both.
+#: ``md`` rather than ``lg``: 40 MB against 560 MB per language, for a small
+#: loss of ``PERSON`` recall. That trade is deliberate now that the install is
+#: mandatory - set ``ITSM_PRESIDIO_SPACY_MODEL=en_core_web_lg`` to buy the
+#: recall back, and re-run the notebook to price it.
 DEFAULT_SPACY_MODELS: dict[str, str] = {
-    "en": "en_core_web_lg",
-    "fr": "fr_core_news_lg",
-    "de": "de_core_news_lg",
-    "es": "es_core_news_lg",
+    "en": "en_core_web_md",
+    "fr": "fr_core_news_md",
+    "de": "de_core_news_md",
+    "es": "es_core_news_md",
 }
 
 #: Presidio entity name -> our entity type. Everything absent from this map is
@@ -85,6 +90,51 @@ ENTITY_MAP: dict[str, EntityType] = {
 #: Trailing characters an analyser routinely swallows into a span. Trimming
 #: them keeps offsets comparable with the reference spans, which are tight.
 _EDGE_CHARS = " \t\n.,;:!?()[]<>\"'"
+
+
+@lru_cache(maxsize=4)
+def _build_engine(language: str, spacy_model: str) -> Any:
+    """Build one ``AnalyzerEngine``, cached for the life of the process.
+
+    Loading a spaCy pipeline costs several seconds. The evaluation builds a
+    recogniser more than once - the corpus run and the unseen-name probe are
+    separate objects - so without this cache the same pipeline is loaded twice
+    and the measured throughput of the *second* one is wrong.
+    """
+    # Imported here, not at module scope: these are required dependencies, but
+    # an environment that has not been synced since they became required should
+    # get a message naming the fix rather than a bare ModuleNotFoundError from
+    # an import line.
+    try:
+        # `spacy.cli` is not bound by a bare `import spacy` on every version,
+        # so both submodules are imported by name.
+        from presidio_analyzer import AnalyzerEngine
+        from presidio_analyzer.nlp_engine import NlpEngineProvider
+        from spacy import cli as spacy_cli
+        from spacy import util as spacy_util
+    except ImportError as error:
+        missing = error.name or "presidio-analyzer / spacy"
+        raise RuntimeError(
+            f"the presidio backend needs {missing!r}, which is a required dependency "
+            "of this project - run `uv sync` to install it. If that does not fix it, "
+            "the interpreter running this is not the project environment."
+        ) from error
+
+    if not spacy_util.is_package(spacy_model):
+        # The one dependency pip cannot express: spaCy pipelines are published
+        # as separate wheels. Fetch it once rather than making the caller run a
+        # manual command before any comparison can start.
+        logger.info("downloading spaCy pipeline %s (one-time)", spacy_model)
+        spacy_cli.download(spacy_model)
+
+    logger.info("loading presidio analyser (%s, %s)", language, spacy_model)
+    provider = NlpEngineProvider(
+        nlp_configuration={
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": language, "model_name": spacy_model}],
+        }
+    )
+    return AnalyzerEngine(nlp_engine=provider.create_engine(), supported_languages=[language])
 
 
 def _tighten(text: str, start: int, end: int) -> tuple[int, int] | None:
@@ -152,42 +202,14 @@ class PresidioRecognizer:
         ]
 
     def _load(self) -> Any:
-        """Build the analyser on first use, with an actionable error."""
-        if self._engine is not None:
-            return self._engine
-        try:
-            from presidio_analyzer import AnalyzerEngine
-            from presidio_analyzer.nlp_engine import NlpEngineProvider
-        except ImportError as error:  # pragma: no cover - depends on the extra
-            raise RuntimeError(
-                "the presidio backend needs the optional dependencies: "
-                "`uv sync --extra presidio`. The rule-based backend needs nothing."
-            ) from error
-
-        if self.spacy_model is None:
-            raise RuntimeError(
-                f"no default spaCy pipeline is known for language {self.language!r}; "
-                "set ITSM_PRESIDIO_SPACY_MODEL to the pipeline to load."
-            )
-
-        logger.info("loading presidio analyser (%s, %s)", self.language, self.spacy_model)
-        provider = NlpEngineProvider(
-            nlp_configuration={
-                "nlp_engine_name": "spacy",
-                "models": [{"lang_code": self.language, "model_name": self.spacy_model}],
-            }
-        )
-        try:
-            nlp_engine = provider.create_engine()
-        except OSError as error:  # pragma: no cover - depends on the download
-            raise RuntimeError(
-                f"spaCy pipeline {self.spacy_model!r} is not installed: run "
-                f"`uv run python -m spacy download {self.spacy_model}`."
-            ) from error
-
-        self._engine = AnalyzerEngine(
-            nlp_engine=nlp_engine, supported_languages=[self.language]
-        )
+        """Return the analyser, building it at most once per process."""
+        if self._engine is None:
+            if self.spacy_model is None:
+                raise RuntimeError(
+                    f"no default spaCy pipeline is known for language {self.language!r}; "
+                    "set ITSM_PRESIDIO_SPACY_MODEL to the pipeline to load."
+                )
+            self._engine = _build_engine(self.language, self.spacy_model)
         return self._engine
 
     def _to_spans(self, text: str, results: list[Any]) -> list[PiiSpan]:

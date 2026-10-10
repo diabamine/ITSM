@@ -37,7 +37,7 @@ from itsm.privacy.rules import RuleBasedRecognizer
 
 logger = get_logger("privacy.anonymiser")
 
-Backend = Literal["rules", "transformer", "presidio"]
+Backend = Literal["rules", "transformer", "presidio", "gliner"]
 
 #: Free-text columns anonymised by default. Structured columns are not touched:
 #: they are categorical values from a closed vocabulary, not free text.
@@ -99,6 +99,12 @@ def build_recognizer(
         return PresidioRecognizer(
             language=language or DEFAULT_LANGUAGE, spacy_model=model_name, **options
         )
+    if backend == "gliner":
+        from itsm.privacy.gliner import GlinerRecognizer
+
+        if model_name:
+            return GlinerRecognizer(model_name, **options)
+        return GlinerRecognizer(**options)
     return RuleBasedRecognizer()
 
 

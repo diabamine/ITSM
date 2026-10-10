@@ -132,6 +132,73 @@ def analyze_lifecycle() -> None:
         _print_metrics("rework", report["status_updates"]["rework"])
 
 
+@analyze_app.command("root-cause")
+def analyze_root_cause(
+    recent: Annotated[int, typer.Option(help="Days of the window to explain.")] = 14,
+    baseline: Annotated[int, typer.Option(help="Days of the comparison window.")] = 56,
+    backend: Annotated[str | None, typer.Option(help="tfidf | embeddings")] = None,
+    within: Annotated[str, typer.Option(help="Parent column to sub-divide.")] = "category",
+    min_cluster_size: Annotated[int, typer.Option(help="Smallest sub-topic.")] = 20,
+    labeller: Annotated[str, typer.Option(help="template | local | api")] = "template",
+    llm_model: Annotated[str | None, typer.Option(help="Model id for the LLM labeller.")] = None,
+    llm_url: Annotated[str | None, typer.Option(help="OpenAI-compatible base URL.")] = None,
+) -> None:
+    """Tag tickets with sub-topics and rank what is driving the increase."""
+    from itsm.pipelines.root_cause import run
+
+    options: dict[str, Any] = {}
+    if labeller == "local" and llm_model:
+        options["model_name"] = llm_model
+    if labeller == "api":
+        options = {"base_url": llm_url or "", "model": llm_model or ""}
+
+    report = run(
+        get_settings(),
+        backend=backend,  # type: ignore[arg-type]
+        within=within,
+        recent_days=recent,
+        baseline_days=baseline,
+        min_cluster_size=min_cluster_size,
+        labeller_kind=labeller,
+        labeller_options=options,
+    )
+    _print_metrics(
+        "sub-topics",
+        {
+            "tickets": report["n_tickets"],
+            "sub-topics": report["n_subtopics"],
+            "coverage": f"{report['coverage']:.0%}",
+            "labeller": report["labeller"],
+            "significant drivers": report["n_drivers"],
+        },
+    )
+
+    if not report["ranking"]:
+        console.print("[yellow]no sub-topic carried enough recent volume to rank[/yellow]")
+        return
+
+    table = Table(
+        title=f"what changed over the last {report['recent_days']} days", header_style="bold"
+    )
+    for column in ("category", "sub-topic", "per day", "was", "x", "share", "p"):
+        table.add_column(column)
+    for row in report["ranking"][:10]:
+        driver = row["poisson_p"] <= 0.01 and row["share_of_increase"] >= 0.05
+        style = "bold red" if driver else ""
+        table.add_row(
+            row["parent_category"][:22],
+            row["label"][:52],
+            f"{row['recent_per_day']:.2f}",
+            f"{row['baseline_per_day']:.2f}",
+            f"{row['growth_ratio']:.1f}" if row["growth_ratio"] else "new",
+            f"{row['share_of_increase']:.0%}",
+            f"{row['poisson_p']:.1e}",
+            style=style,
+        )
+    console.print(table)
+    console.print("[dim]bold red = statistically significant driver of the increase[/dim]")
+
+
 # -------------------------------------------------------------------- train
 @train_app.command("classifier")
 def train_classifier_command(

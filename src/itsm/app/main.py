@@ -13,7 +13,7 @@ from __future__ import annotations
 import streamlit as st
 
 from itsm.app import state
-from itsm.app.views import embedding_map, families, overview, privacy, signals, triage
+from itsm.app.views import embedding_map, families, overview, privacy, root_cause, signals, triage
 from itsm.logging import setup_logging
 
 st.set_page_config(
@@ -95,6 +95,12 @@ def main() -> None:
                     title="Trends & weak signals",
                     icon=":material/trending_up:",
                     url_path="signals",
+                ),
+                st.Page(
+                    root_cause.render,
+                    title="Root cause",
+                    icon=":material/travel_explore:",
+                    url_path="root-cause",
                 ),
             ],
             "Operate": [
