@@ -1,6 +1,7 @@
-.cache/
-.env
 __pycache__/
 *.pyc
 .ruff_cache/
 .pytest_cache/
+
+# The extract is stored with the code (the repo root ignores data/).
+!data/

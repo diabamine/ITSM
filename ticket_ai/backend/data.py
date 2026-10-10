@@ -1,127 +1,107 @@
-"""Loading the extract and slicing it for the pages.
+"""Load the ticket extract (CSV or XLSX) and filter it.
 
-One small class, :class:`TicketStore`, owns the DataFrame. The frontend never
-reads files or filters rows itself: it asks the store.
+This is the only file that knows the names of your columns and the labels the
+alert rules look for. If your export differs, edit the constants below.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import io
+import re
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
 
-from backend.config import Settings
-from backend.mock_data import generate_tickets
-from backend.schema import (
-    ALL_COLUMNS,
-    REQUIRED_COLUMNS,
-    Col,
-    coerce_types,
-    normalise_columns,
-)
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"  # put your extract (CSV or XLSX) here
+
+# --- columns of the extract ---------------------------------------------------------
+ID, URGENCY, IMPACT, SERVICE = "Numéro", "Urgence", "Impact", "Service"
+OPENED, RESOLVED = "Ouvert le", "Résolu"
+TITLE, DESCRIPTION = "Description courte", "Description"
+GROUP, ENTITY, SITE, CONTACT = "Groupe d'affectation", "Entité", "Site", "Type de contact"
+RESOLUTION_H, SLA, REOPENED = "Temps de resolution", "SLA", "Nombre de reouverture"
+# --- columns inferred by the LLM ----------------------------------------------------
+INCIDENT_TYPE, TONE, REQUEST_TYPE, SCOPE = "IncidentType", "Tone", "RequestType", "Scope"
+ROOT_CAUSE, RESOLUTION_SUMMARY, AFFECTED_SYSTEM = "RootCause", "ResolutionSummary", "AffectedSystem"
+# --- labels the alert rules look for: adapt them to the values of your data ---------
+SLA_BREACHED = "Dépassé"
+NEGATIVE_TONES = {"Frustré", "Urgent", "Agressif"}
+WIDE_SCOPES = {"Site", "Multi-sites"}
+SECURITY = "Sécurité"
+LEVELS = ["Low", "Medium", "High"]  # order of Urgence / Impact
+
+# fmt: off
+COLUMNS = [ID, URGENCY, IMPACT, SERVICE, OPENED, RESOLVED, TITLE, DESCRIPTION, GROUP, ENTITY, SITE, CONTACT,
+           RESOLUTION_H, SLA, REOPENED, INCIDENT_TYPE, TONE, REQUEST_TYPE, SCOPE, ROOT_CAUSE,
+           RESOLUTION_SUMMARY, AFFECTED_SYSTEM]
+# fmt: on
 
 
-class MissingColumnsError(ValueError):
-    """Raised when an extract lacks columns the app cannot work without."""
+def _key(name: object) -> str:
+    """Reduce a header to lowercase letters and digits: ``"Temps écoulé "`` -> ``"tempsecoule"``."""
+    ascii_only = unicodedata.normalize("NFKD", str(name)).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]", "", ascii_only.lower())
 
 
-def load_extract(path: Path) -> pd.DataFrame:
-    """Read a CSV or XLSX extract and bring it to the canonical schema.
+def find_extract() -> Path | None:
+    """The extract stored in ``DATA_DIR``: the first ``.csv`` or ``.xlsx`` file, or ``None`` if there is none."""
+    files = sorted(p for p in DATA_DIR.glob("*") if p.suffix.lower() in {".csv", ".xlsx", ".xls"} and not p.name.startswith("~$"))
+    return files[0] if files else None
 
-    CSV separators and encodings are auto-detected because French exports are
-    usually ``;``-separated and Windows-1252 encoded.
 
-    Args:
-        path: Location of the file.
+def load(path: Path) -> pd.DataFrame:
+    """Read an extract and bring it to the column names above.
 
-    Returns:
-        A frame with canonical headers, parsed dates and numbers. Columns that
-        are absent from the file (typically the LLM ones) are added empty, so
-        every page can rely on them existing.
+    Headers are matched ignoring accents, case and spacing. CSV separators and
+    encodings are detected (French exports are usually ``;`` and Windows-1252).
+    Columns missing from the file are added empty so the pages never fail on them.
 
     Raises:
-        MissingColumnsError: if a column in :data:`~backend.schema.REQUIRED_COLUMNS`
-            is missing.
+        ValueError: if the opening date, title or description column is missing.
     """
     if path.suffix.lower() in {".xlsx", ".xls"}:
         raw = pd.read_excel(path)
     else:
+        content = path.read_bytes()
         try:
-            raw = pd.read_csv(path, sep=None, engine="python", encoding="utf-8-sig")
+            text = content.decode("utf-8-sig")
         except UnicodeDecodeError:
-            raw = pd.read_csv(path, sep=None, engine="python", encoding="cp1252")
+            text = content.decode("cp1252")
+        raw = pd.read_csv(io.StringIO(text), sep=None, engine="python")
 
-    frame = coerce_types(normalise_columns(raw))
-    missing = [c for c in REQUIRED_COLUMNS if c not in frame.columns]
+    known = {_key(column): column for column in COLUMNS}
+    df = raw.rename(columns=lambda column: known.get(_key(column), column))
+    missing = [c for c in (OPENED, TITLE, DESCRIPTION) if c not in df]
     if missing:
-        raise MissingColumnsError(f"The extract is missing required columns: {missing}")
-    for column in ALL_COLUMNS:
-        if column not in frame.columns:
-            frame[column] = pd.NA
-    return frame
+        raise ValueError(f"The extract has no column {missing}. Found: {list(raw.columns)}")
+
+    df = df.reindex(columns=[*df.columns, *[c for c in COLUMNS if c not in df]])
+    for column in (OPENED, RESOLVED):
+        df[column] = pd.to_datetime(df[column], dayfirst=True, errors="coerce")
+    for column in (RESOLUTION_H, REOPENED):  # accept decimal commas
+        df[column] = pd.to_numeric(df[column].astype(str).str.replace(",", ".", regex=False), errors="coerce")
+    return df.dropna(subset=[OPENED]).sort_values(OPENED).reset_index(drop=True)
 
 
-class TicketStore:
-    """The ticket extract plus the few queries the pages need.
+def options(df: pd.DataFrame, column: str, order: list[str] = ()) -> list[str]:  # type: ignore[assignment]
+    """Distinct non-empty values of a column, for a select box. ``order`` lists values to put first."""
+    values = {v for v in df[column].dropna().astype(str) if v.strip()}
+    return sorted(values, key=lambda v: (order.index(v) if v in order else len(order), v))
 
-    Attributes:
-        tickets: The full frame, sorted by opening date.
-        source: Human-readable origin (file name or ``synthetic``), shown in the UI.
+
+def select(df: pd.DataFrame, start=None, end=None, filters: dict[str, list[str]] | None = None) -> pd.DataFrame:
+    """Tickets opened from ``start`` to ``end`` (both days included) matching every filter.
+
+    An empty list for a column means "no restriction", which is what an untouched
+    multiselect returns.
     """
-
-    def __init__(self, tickets: pd.DataFrame, source: str = "unknown") -> None:
-        self.tickets = tickets.sort_values(Col.OPENED).reset_index(drop=True)
-        self.source = source
-
-    @classmethod
-    def from_settings(cls, settings: Settings) -> TicketStore:
-        """Load ``TICKETS_PATH`` if set, otherwise generate a synthetic extract."""
-        if settings.tickets_path:
-            return cls(load_extract(settings.tickets_path), source=settings.tickets_path.name)
-        return cls(generate_tickets(n=settings.mock_tickets), source="synthetic")
-
-    @property
-    def reference_date(self) -> pd.Timestamp:
-        """The 'now' of the analysis: the latest opening date in the extract.
-
-        Using the data rather than the wall clock keeps the app correct on a
-        historical extract.
-        """
-        return self.tickets[Col.OPENED].max()
-
-    @property
-    def has_llm_columns(self) -> bool:
-        """Whether the LLM-inferred columns are actually populated."""
-        return bool(self.tickets[Col.INCIDENT_TYPE].notna().any())
-
-    def options(self, column: str) -> list[str]:
-        """Sorted distinct non-empty values of a column (for select boxes)."""
-        values = self.tickets[column].dropna().astype(str)
-        return sorted(v for v in values.unique() if v.strip())
-
-    def filter(
-        self,
-        start: pd.Timestamp | None = None,
-        end: pd.Timestamp | None = None,
-        selections: Mapping[str, Sequence[str]] | None = None,
-    ) -> pd.DataFrame:
-        """Return the tickets opened in ``[start, end]`` matching every selection.
-
-        Args:
-            start: First day included (inclusive, from midnight).
-            end: Last day included (inclusive, until 23:59:59).
-            selections: ``{column: allowed values}``. An empty list means "no
-                restriction" for that column, which is what an untouched
-                multiselect produces.
-        """
-        mask = pd.Series(True, index=self.tickets.index)
-        opened = self.tickets[Col.OPENED]
-        if start is not None:
-            mask &= opened >= pd.Timestamp(start).normalize()
-        if end is not None:
-            mask &= opened < pd.Timestamp(end).normalize() + pd.Timedelta(days=1)
-        for column, allowed in (selections or {}).items():
-            if allowed:
-                mask &= self.tickets[column].astype(str).isin([str(v) for v in allowed])
-        return self.tickets[mask]
+    keep = pd.Series(True, index=df.index)
+    if start is not None:
+        keep &= df[OPENED] >= pd.Timestamp(start)
+    if end is not None:
+        keep &= df[OPENED] < pd.Timestamp(end) + pd.Timedelta(days=1)
+    for column, allowed in (filters or {}).items():
+        if allowed:
+            keep &= df[column].astype(str).isin(allowed)
+    return df[keep]

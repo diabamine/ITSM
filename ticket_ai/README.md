@@ -1,151 +1,76 @@
 # Ticket AI
 
-A minimal Streamlit app that shows what an LLM and embeddings add to a ticket extract.
-It reads the extract **plus the columns the LLM inferred** (`IncidentType`, `Tone`, `RequestType`,
-`Scope`, `RootCause`, `ResolutionSummary`, `AffectedSystem`) and offers three pages:
+A minimal Streamlit app on a ticket extract that already contains the columns inferred by an LLM
+(`IncidentType`, `Tone`, `RequestType`, `Scope`, `RootCause`, `ResolutionSummary`, `AffectedSystem`).
 
-| Page | What you do | What the AI does |
-|---|---|---|
-| **New ticket** | Fill a form like a real ticket and submit it | The LLM extracts structured fields, a k-NN returns the most similar past tickets, rules raise alerts |
-| **Batch report** | Pick a period and some types, services, groups... | Analyses the batch and renders a report (**HTML**, **PDF**) with the trend and the alerts |
-| **Dashboard** | Choose a granularity and a breakdown | Charts volume and distribution over time, with a **projection** and its uncertainty band |
+| Page | What it does |
+|---|---|
+| **New ticket** | A form like a real ticket. On submit, *your* LLM extracts fields, the closest past tickets are retrieved (k-NN on embeddings + categories) and alerts are raised. |
+| **Batch report** | Pick a period and filters: trend and alerts of the batch, as an HTML report (printable to PDF). |
+| **Dashboard** | Volume and distribution over time, per category, with a projection and its uncertainty band. |
 
-It runs **offline out of the box**: with no API key it generates a synthetic extract and replaces the LLM
-with a local keyword heuristic (clearly labelled in the UI), so you can try everything before connecting anything.
-
-## Quick start
+## Run
 
 ```bash
 cd ticket_ai
 pip install -r requirements.txt
+# put your extract (CSV or XLSX) in data/
 streamlit run frontend/app.py
 ```
 
-Optional, for better results:
+The extract is read from `data/` (the first `.csv` / `.xlsx` found) and reloaded when the file changes. Nothing is uploaded
+in the app. Form widgets (service, group, site...) are filled with the values found in the file.
+Tests: `pip install -r requirements-dev.txt && pytest`.
 
-```bash
-pip install sentence-transformers   # multilingual embeddings (otherwise TF-IDF is used)
-pip install weasyprint              # PDF export (needs the Pango library on the system)
-```
-
-Run the tests with `pip install -r requirements-dev.txt && pytest` (42 tests, offline, about 5 seconds).
-
-## Architecture
+## The five files
 
 ```
-ticket_ai/
-├── backend/               computation only: no Streamlit import anywhere
-│   ├── schema.py          column names, allowed values, header normalisation
-│   ├── config.py          settings read from environment variables / .env
-│   ├── data.py            TicketStore: load the extract, filter it
-│   ├── mock_data.py       synthetic extract (same columns as the real one)
-│   ├── privacy.py         masks emails, phones, IBANs, cards before an API call
-│   ├── llm.py             LLM client, offline fallback, ticket enrichment, batch summary
-│   ├── similarity.py      embeddings + k-NN over past tickets
-│   ├── alerts.py          ticket-level alert rules
-│   ├── analytics.py       volumes, KPIs, projection, growth, batch-level alerts
-│   └── report.py          BatchReport -> HTML / PDF
-├── frontend/              rendering only: no business logic
-│   ├── app.py             entry point, navigation, sidebar
-│   ├── state.py           cached resources (store, index, LLM)
-│   ├── components.py      alert boxes, HTML preview
-│   ├── charts.py          Plotly figures
-│   └── views/             one module per page
-└── tests/
+backend/                     computation, no Streamlit
+  data.py       load + filter the extract. Column names and the label values the alert rules look for: edit here
+  analytics.py  KPIs, volumes, projection, growth, alerts, nearest tickets
+  ai.py         YOUR code: embed() and extract_fields()
+frontend/                    rendering, no computation
+  app.py        the three pages and the navigation
+  render.py     Plotly figures and the HTML report
 ```
 
-The rule that keeps it simple: **`frontend` asks, `backend` answers.** A page collects inputs, calls a
-backend function and draws the result. Every number on screen and in the report comes from the same
-functions, so they cannot disagree, and the backend can be tested without a browser.
+## What you have to do
 
-## Your own data
+1. **`backend/ai.py`**: implement the two functions. Until then, the ticket page says which one is missing and the other
+   two pages work normally.
+   - `embed(texts) -> array (n, dimension)`: called once on the whole history (cached), and on each new ticket.
+   - `extract_fields(ticket) -> dict`: returns the LLM columns for a new ticket, e.g.
+     `{"IncidentType": ..., "Tone": ..., "Scope": ..., "AffectedSystem": ..., "RootCause": ...}`.
+2. **`backend/data.py`**: check the constants at the top against your data. The alert rules compare your columns with
+   `SLA_BREACHED`, `NEGATIVE_TONES`, `WIDE_SCOPES` and `SECURITY`; these are placeholders until you set your own labels.
+   `Temps de resolution` is assumed to be in hours.
 
-```bash
-TICKETS_PATH=/path/to/extract.csv streamlit run frontend/app.py
-```
-
-CSV (`;` or `,`, UTF-8 or Windows-1252) and XLSX are supported. Headers are matched **ignoring accents,
-case and spacing**, so `Temps écoulé` and `Temps ecoulé` both work, as does the correctly spelled
-`Commentaire additionnel`. Dates are read day-first and numbers accept decimal commas.
-
-Needed at minimum: `Numéro`, `Ouvert le`, `Description courte`, `Description`. Any other missing column is added
-empty. The LLM-inferred columns are what the report and dashboard group by: if they are empty, the sidebar says so.
-`TGI` is treated as an opaque category.
-
-## The LLM
-
-Any **OpenAI-compatible** chat API works (OpenAI, an enterprise gateway, vLLM, Ollama...):
-
-```bash
-LLM_BASE_URL=https://api.openai.com/v1
-LLM_MODEL=gpt-4o-mini
-LLM_API_KEY=...
-```
-
-- **Ticket form**: the model returns six fields as JSON. Each is validated against the allowed values; a wrong
-  or missing answer falls back to a safe default instead of breaking the page.
-- **If the call fails** (network, quota, bad JSON), the local heuristic is used and the page says so. Nothing crashes.
-- **What leaves the machine**: the ticket text with emails, phone numbers, IBANs and card numbers masked
-  (`LLM_REDACT_PII=false` to disable). The **report summary** sends only aggregated figures, never ticket text.
-- **Another provider**: `LLMClient.complete` in `backend/llm.py` is the only place that knows about HTTP.
-
-> **Limit:** masking uses regular expressions, so it catches data with a *format* but **not names**. A ticket saying
-> "contact Camille Dubois" still carries the name to the API. For real data, swap `redact_pii` for a proper
-> detector (Presidio, GLiNER); its signature is the only contract.
+Headers are matched ignoring accents, case and spacing. Required columns: `Ouvert le`, `Description courte`, `Description`;
+any other missing column is added empty.
 
 ## How it works
 
-### Similar tickets
+**Similar tickets**: `similarity = 0.7 x cosine(embeddings) + 0.3 x share of matching categories` (service, group,
+incident type, affected system, site; the last two come from your LLM). Both terms are in [0, 1], so 0.8 reads as close
+wording and mostly the same context. A brute-force dot product is milliseconds for hundreds of thousands of tickets, so no
+vector database. Ties go to the most recent ticket.
 
-```
-similarity = 0.7 x cosine(text embeddings) + 0.3 x share of matching categories
-```
+**Ticket alerts** are plain rules in `analytics.ticket_alerts`: urgency and impact both at the top level, security type,
+wide scope, negative tone, 5+ similar tickets in the last 14 days (error at 10+), and similar tickets that were hard to
+resolve (SLA missed or reopened).
 
-Text is *short description + description*. Categories are service, assignment group, incident type,
-affected system and site, and include what the LLM inferred for the new ticket. Both terms are in `[0, 1]`, so a
-score reads directly: 0.82 means close wording and mostly the same context. The search is a brute-force dot
-product (milliseconds up to hundreds of thousands of tickets), so there is no vector database to run. Ties go to the most
-recent ticket. Embeddings are cached on disk after the first run.
+**Batch alerts** (`analytics.batch_alerts`): volume spike against the previous weeks, sustained rise over 4 weeks, and
+topics (type, system, root cause) that grew at least 1.5x, hold 15%+ of the total increase and are unlikely to be noise
+(Poisson test).
 
-### Alerts
-
-Alerts are **plain rules** over the LLM's facts and the history, so each one can be read, tested and tuned (`Thresholds` in
-`backend/alerts.py`).
-
-| Alert | Raised when |
-|---|---|
-| Possible major incident | Urgency **and** impact are High |
-| Security-related ticket | The LLM classes it as `Sécurité` |
-| Wide impact | Scope is `Site` or `Multi-sites` |
-| Escalation risk | Tone is frustrated, urgent or aggressive |
-| Emerging pattern | 5+ similar tickets (similarity above 0.6) in the last 14 days; critical at 10+ |
-| Similar tickets were hard to resolve | Among the 10 closest: 40%+ missed SLA, or 0.5+ reopenings on average |
-| Personal data detected | Emails, phones, IBANs or cards found in the text |
-
-The batch report adds **volume spike**, **sustained rise**, **growing topic** (type, system or root cause) and
-**SLA / tone drift**. A topic alert needs the rise to be large *and* statistically unlikely to be noise (Poisson test).
-
-### Report
-
-`build_report` returns a `BatchReport`; `to_html()` gives one self-contained file and `to_pdf()` runs that same HTML
-through WeasyPrint, so the two cannot differ. Charts are **static SVG** (matplotlib), not Plotly: a report has to open
-offline and print. Every dynamic value is HTML-escaped, which matters because the preview is an iframe.
-
-### Projection
-
-Damped Holt exponential smoothing on weekly or monthly counts: a level plus a trend that is damped so a recent
-rise does not extrapolate forever. The shaded band is the usual approximate 95% prediction interval and widens with
-the horizon. Partial first and last periods are excluded so they do not distort the trend.
-
-> **Limit:** it ignores seasonality on purpose. With one or two years of weekly data there is too little to estimate
-> it, and a model claiming more than it knows is worse than a plain one. Read the band, not just the line.
+**Projection**: damped Holt exponential smoothing with an approximate 95% band that widens with the horizon. Seasonality is
+ignored on purpose: one or two years of weekly data are too few to estimate it. Partial first and last periods are dropped.
 
 ## Notes
 
-- **Theme**: `.streamlit/config.toml` is the same Thales theme as the main ITSM app. Streamlit reads it from the
-  folder you launch from, so run from `ticket_ai/` (or from the repo root, whose config has the same theme).
-- **Synthetic data** plants two events so there is something to find: a VPN surge after a client update (last 3 weeks)
-  and a slow Outlook ramp (last 8 weeks). The alerts and the projection should surface both.
-- **PDF on Windows**: WeasyPrint needs GTK/Pango. If it is missing, the button is disabled and the HTML report still works
-  (print it to PDF from the browser).
-- Tested with Streamlit 1.65 and Python 3.12.
+- **The HTML report embeds Plotly's JavaScript (about 4.7 MB)** so it opens offline. For a PDF, use its
+  "Print / save as PDF" button (or Ctrl+P): charts print as they are.
+- **Ticket data is sensitive.** Whether `data/` is committed is your call; add `data/*.csv` and `data/*.xlsx` to `.gitignore`
+  if it should not be.
+- Theme: `.streamlit/config.toml` (Thales palette). Streamlit reads it from the folder you launch from.
+- Tested with Streamlit 1.65, pandas 3, Python 3.12.

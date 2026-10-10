@@ -1,10 +1,12 @@
-# Own config: this app is self-contained and must not inherit the main project's rules.
-line-length = 120
+line-length = 130
 target-version = "py311"
 
 [lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003"]  # French prose contains characters ruff flags as ambiguous
+
+[lint.per-file-ignores]
+"frontend/app.py" = ["E402"]  # the sys.path line must run before the imports
 
 [lint.isort]
 known-first-party = ["backend", "frontend"]

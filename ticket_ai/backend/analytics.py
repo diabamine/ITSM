@@ -1,326 +1,274 @@
-"""Trends, distributions, projections and batch-level alerts.
+"""All the computations: KPIs, volumes, projection, growth, alerts and similar tickets.
 
-Pure functions over DataFrames, no Streamlit. The dashboard and the report call
-exactly the same code, so the number on screen and the number in the PDF cannot
-disagree.
+Plain functions over DataFrames. No Streamlit and no plotting, so everything here can
+be tested, or reused from a notebook, on its own.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
-from scipy import stats
+from scipy.stats import poisson
 
-from backend.alerts import LEVEL_ORDER, Alert
-from backend.schema import NEGATIVE_TONES, Col
-
-FREQ = {"Day": "D", "Week": "W", "Month": "M"}
-#: First day of the next period, per granularity, used to extend the time axis.
-FUTURE_FREQ = {"Day": "D", "Week": "W-MON", "Month": "MS"}
-OPEN_STAGES = ("Nouveau", "Affecté", "En cours", "En attente utilisateur")
+from backend import data as d
 
 
-# --------------------------------------------------------------------------------------
-# Volumes
-# --------------------------------------------------------------------------------------
-def volume_series(tickets: pd.DataFrame, granularity: str = "Week", by: str | None = None) -> pd.DataFrame:
-    """Count tickets per period, with empty periods filled with zero.
+class Alert(NamedTuple):
+    """A flag raised on a ticket or a batch. ``level`` is also the name of the matching ``st.*`` box."""
 
-    A period with no ticket is information, not a missing value: leaving the gap
-    would distort every chart and every projection built on the series.
-
-    Args:
-        tickets: Tickets to count.
-        granularity: ``"Day"``, ``"Week"`` or ``"Month"``.
-        by: Optional column to split the count by.
-
-    Returns:
-        Long frame: ``period`` (start of the period), ``tickets``, ``complete``
-        (False for a first or last period the data only partly covers), and the
-        ``by`` column when one is given.
-    """
-    freq = FREQ[granularity]
-    periods = tickets[Col.OPENED].dt.to_period(freq)
-    if periods.empty:
-        return pd.DataFrame(columns=["period", "tickets", "complete"])
-    full = pd.period_range(periods.min(), periods.max(), freq=freq)
-
-    if by is None:
-        counts = periods.value_counts().reindex(full, fill_value=0).sort_index()
-        frame = pd.DataFrame({"period": full.start_time, "tickets": counts.to_numpy()})
-    else:
-        table = pd.crosstab(periods, tickets[by].astype(str)).reindex(full, fill_value=0)
-        table.index = full.start_time
-        frame = table.rename_axis("period").reset_index().melt(id_vars="period", var_name=by, value_name="tickets")
-    end_of = dict(zip(full.start_time, full.end_time, strict=True))
-    frame["complete"] = frame["period"].map(end_of) <= tickets[Col.OPENED].max()
-    # A batch that starts mid-period has a partial first period too.
-    slack = {"D": pd.Timedelta(days=1), "W": pd.Timedelta(days=1), "M": pd.Timedelta(days=3)}[freq]
-    if tickets[Col.OPENED].min() - full[0].start_time > slack:
-        frame.loc[frame["period"] == full[0].start_time, "complete"] = False
-    return frame.sort_values("period").reset_index(drop=True)
+    level: str  # "error" | "warning" | "info"
+    title: str
+    detail: str = ""
 
 
-def distribution(tickets: pd.DataFrame, column: str, top_n: int = 8) -> pd.DataFrame:
-    """Share of tickets per value of ``column``, with the tail grouped as ``Autres``."""
-    counts = tickets[column].fillna("Non renseigné").astype(str).value_counts()
-    head = counts.head(top_n)
-    if len(counts) > top_n:
-        head = pd.concat([head, pd.Series({"Autres": counts.iloc[top_n:].sum()})])
-    return pd.DataFrame({column: head.index, "tickets": head.to_numpy(), "share": head.to_numpy() / counts.sum()})
+_SEVERITY = {"error": 0, "warning": 1, "info": 2}
+FREQ = {"W": "W-MON", "M": "MS"}  # to extend a series of weeks / months into the future
 
 
-def kpis(tickets: pd.DataFrame) -> dict[str, float | int | None]:
-    """Headline indicators of a set of tickets. Undefined ones are ``None``."""
-    resolved = tickets[tickets[Col.SLA].isin(["Respecté", "Dépassé"])]
-    tones = tickets[Col.TONE].dropna()
-    resolution = pd.to_numeric(tickets[Col.RESOLUTION_HOURS], errors="coerce").dropna()
-    reopen = pd.to_numeric(tickets[Col.REOPEN_COUNT], errors="coerce").dropna()
+# --- basics -----------------------------------------------------------------------------
+def texts(df: pd.DataFrame) -> list[str]:
+    """Text of each ticket as sent to ``ai.embed``: ``"<short description>. <description>"``."""
+    return (df[d.TITLE].fillna("") + ". " + df[d.DESCRIPTION].fillna("")).tolist()
+
+
+def _pct(flags: pd.Series) -> float | None:
+    return float(flags.mean() * 100) if len(flags) else None
+
+
+def kpis(df: pd.DataFrame) -> dict[str, float | int | None]:
+    """Headline figures. A figure is ``None`` when its column is empty in the extract."""
+    hours = df[d.RESOLUTION_H].dropna()
     return {
-        "tickets": len(tickets),
-        "open": int(tickets[Col.STAGE].isin(OPEN_STAGES).sum()),
-        "median_resolution_h": float(resolution.median()) if len(resolution) else None,
-        "sla_breach_pct": float((resolved[Col.SLA] == "Dépassé").mean() * 100) if len(resolved) else None,
-        "reopen_pct": float((reopen > 0).mean() * 100) if len(reopen) else None,
-        "negative_tone_pct": float(tones.isin(NEGATIVE_TONES).mean() * 100) if len(tones) else None,
+        "tickets": len(df),
+        "open": int(df[d.RESOLVED].isna().sum()),
+        "median_resolution_h": float(hours.median()) if len(hours) else None,
+        "sla_missed_pct": _pct(df[d.SLA].dropna() == d.SLA_BREACHED),
+        "reopened_pct": _pct(df[d.REOPENED].dropna() > 0),
+        "negative_tone_pct": _pct(df[d.TONE].dropna().isin(d.NEGATIVE_TONES)),
     }
 
 
-def change_vs_previous(all_tickets: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> float | None:
-    """Percent change in volume against the equally long period just before.
+def volume(df: pd.DataFrame, freq: str = "W", by: str | None = None) -> pd.DataFrame:
+    """Tickets per week (``"W"``) or month (``"M"``); empty periods count as 0.
 
-    Returns ``None`` when the previous period is empty (no baseline to compare to).
+    The result is indexed by period start, with one column ``Tickets`` or, with ``by``, one
+    column per value. A first or last period that the data covers only partly is dropped,
+    otherwise it would look like a collapse. Two days of slack are allowed because a week
+    that ends on a quiet Friday is still a full week.
     """
-    start, end = pd.Timestamp(start).normalize(), pd.Timestamp(end).normalize()
-    length = (end - start) + pd.Timedelta(days=1)
-    opened = all_tickets[Col.OPENED]
-    current = int(((opened >= start) & (opened < end + pd.Timedelta(days=1))).sum())
-    previous = int(((opened >= start - length) & (opened < start)).sum())
-    return (current - previous) / previous * 100 if previous else None
+    opened = df[d.OPENED]
+    period = opened.dt.to_period(freq)
+    index = pd.period_range(period.min(), period.max(), freq=freq)
+    if by is None:
+        counts = period.value_counts().reindex(index, fill_value=0).to_frame("Tickets")
+    else:
+        counts = pd.crosstab(period, df[by].fillna("n/a").astype(str)).reindex(index, fill_value=0)
+        counts.columns.name = None
+    slack = pd.Timedelta(days=2)
+    complete = (index.start_time >= opened.min() - slack) & (index.end_time <= opened.max() + slack)
+    counts, starts = counts[complete], index.start_time[complete]
+    counts.index = starts
+    return counts
 
 
-# --------------------------------------------------------------------------------------
-# Projection
-# --------------------------------------------------------------------------------------
-def project(series: pd.Series, horizon: int, granularity: str = "Week", phi: float = 0.9) -> pd.DataFrame:
-    """Project a count series forward with damped Holt exponential smoothing.
+# --- projection -------------------------------------------------------------------------
+def _holt(y: np.ndarray, alpha: float, beta: float, phi: float) -> tuple[float, float, np.ndarray]:
+    """One pass of damped Holt smoothing: final level, final trend and one-step errors."""
+    level, trend, errors = y[0], float(np.diff(y[:4]).mean()), []
+    for value in y[1:]:
+        error = value - (level + phi * trend)
+        errors.append(error)
+        level, trend = level + phi * trend + alpha * error, phi * trend + alpha * beta * error
+    return float(level), trend, np.array(errors)
 
-    The model keeps a *level* and a *trend* and damps the trend (``phi < 1``) so a
-    recent rise does not extrapolate to infinity. Smoothing parameters are
-    chosen by minimising the one-step-ahead error. The band is the usual
-    approximate prediction interval: it widens with the horizon.
 
-    It ignores seasonality on purpose: with weekly or monthly counts over a year or
-    two there is too little data to estimate it reliably, and a model that claims
-    more than it knows is worse than a plain one. Read the band, not just the line.
+def project(series: pd.Series, horizon: int, freq: str = "W", phi: float = 0.9) -> pd.DataFrame:
+    """Project a series of counts ``horizon`` periods ahead, with an approximate 95% band.
 
-    Args:
-        series: Counts indexed by period start. Must contain only complete periods.
-        horizon: Number of periods to project.
-        granularity: ``"Day"``, ``"Week"`` or ``"Month"``; sets the future dates.
-        phi: Damping factor in ``(0, 1]``.
+    Damped Holt exponential smoothing: a level plus a trend that fades (``phi < 1``), so a recent
+    rise does not extrapolate forever. The smoothing parameters minimise the one-step error and
+    the band widens with the horizon. Seasonality is ignored on purpose: one or two years of
+    weekly data are too few to estimate it reliably. Fewer than 8 points give a flat projection.
 
     Returns:
-        ``period``, ``forecast``, ``lower``, ``upper`` for each future period.
+        ``forecast``, ``lower`` and ``upper``, indexed by the start of each future period.
     """
-    y = series.to_numpy(dtype=float)
-    future = pd.date_range(series.index[-1], periods=horizon + 1, freq=FUTURE_FREQ[granularity])[1:]
-
-    if len(y) < 8:  # too short to fit a trend: a flat projection with a wide band
-        mean = np.full(horizon, float(np.mean(y[-4:])))
-        sigma = np.full(horizon, float(np.std(y)) if len(y) > 1 else 1.0)
+    y = series.to_numpy(float)
+    future = pd.date_range(series.index[-1], periods=horizon + 1, freq=FREQ[freq])[1:]
+    if len(y) < 8:
+        mean = np.full(horizon, y[-4:].mean())
+        sigma = np.full(horizon, y.std() if len(y) > 1 else 1.0)
     else:
-        alpha, beta = _fit_holt(y, phi)
-        level, trend, residuals = _run_holt(y, alpha, beta, phi)
-        mean = level + trend * np.cumsum(phi ** np.arange(1, horizon + 1))
-        # ETS(A,Ad,N) prediction variance: sigma^2 * (1 + sum_{j<h} c_j^2),
-        # with c_j = alpha * (1 + beta * sum_{i<=j} phi^i).
-        c = alpha * (1 + beta * np.cumsum(phi ** np.arange(1, horizon)))
-        variance = 1 + np.concatenate([[0.0], np.cumsum(c**2)])
-        sigma = float(np.std(residuals, ddof=1)) * np.sqrt(variance)
-
+        grid = [(a, b) for a in (0.1, 0.2, 0.3, 0.5, 0.7, 0.9) for b in (0.05, 0.1, 0.2, 0.4)]
+        alpha, beta = min(grid, key=lambda ab: np.sum(_holt(y, *ab, phi)[2] ** 2))
+        level, trend, errors = _holt(y, alpha, beta, phi)
+        steps = np.arange(1, horizon + 1)
+        mean = level + trend * np.cumsum(phi**steps)
+        c = alpha * (1 + beta * np.cumsum(phi ** steps[:-1]))  # standard ETS(A,Ad,N) variance
+        sigma = errors.std(ddof=1) * np.sqrt(1 + np.concatenate([[0.0], np.cumsum(c**2)]))
     mean = np.maximum(mean, 0)
     return pd.DataFrame(
-        {
-            "period": future,
-            "forecast": mean,
-            "lower": np.maximum(mean - 1.96 * sigma, 0),
-            "upper": mean + 1.96 * sigma,
-        }
+        {"forecast": mean, "lower": np.maximum(mean - 1.96 * sigma, 0), "upper": mean + 1.96 * sigma},
+        index=future,
     )
 
 
-def _run_holt(y: np.ndarray, alpha: float, beta: float, phi: float) -> tuple[float, float, np.ndarray]:
-    """One pass of damped Holt in error-correction form; returns level, trend, residuals."""
-    level, trend = y[0], float(np.mean(np.diff(y[:4])))
-    residuals = []
-    for value in y[1:]:
-        error = value - (level + phi * trend)
-        residuals.append(error)
-        level = level + phi * trend + alpha * error
-        trend = phi * trend + alpha * beta * error
-    return float(level), float(trend), np.array(residuals)
+# --- what is growing --------------------------------------------------------------------
+def growth(df: pd.DataFrame, column: str, recent: int = 28, baseline: int = 84, min_recent: int = 10) -> pd.DataFrame:
+    """Compare the last ``recent`` days with the ``baseline`` days before, for each value of ``column``.
 
-
-def _fit_holt(y: np.ndarray, phi: float) -> tuple[float, float]:
-    """Pick the (alpha, beta) pair with the smallest one-step squared error."""
-    best, best_sse = (0.3, 0.1), np.inf
-    for alpha in (0.1, 0.2, 0.3, 0.5, 0.7, 0.9):
-        for beta in (0.05, 0.1, 0.2, 0.4):
-            sse = float(np.sum(_run_holt(y, alpha, beta, phi)[2] ** 2))
-            if sse < best_sse:
-                best, best_sse = (alpha, beta), sse
-    return best
-
-
-# --------------------------------------------------------------------------------------
-# What is growing
-# --------------------------------------------------------------------------------------
-def growth_by(
-    tickets: pd.DataFrame, column: str, recent_days: int = 28, baseline_days: int = 84, min_recent: int = 10
-) -> pd.DataFrame:
-    """Compare the recent rate of each value of ``column`` with its baseline rate.
-
-    The "now" is the latest ticket of the batch. For each value:
-
-    * ``ratio``: recent rate / baseline rate (``None`` if it did not exist before);
-    * ``share_of_increase``: its part of the total *rise* across all values;
-    * ``p_value``: probability of seeing at least this many recent tickets if the
-      rate had not changed (Poisson), i.e. how unlikely it is to be noise.
-
-    Returns an empty frame when the batch is too short to define a baseline.
+    Columns: ``recent`` (tickets), ``was_per_day``, ``now_per_day``, ``ratio`` (NaN when the value did not
+    exist before), ``share_of_increase`` (its part of the total rise) and ``p_value`` (chance of seeing at
+    least this many recent tickets if the rate had not changed: small means it is not noise).
+    Empty when the data is too short to define a baseline.
     """
-    columns = [column, "recent", "baseline_per_day", "recent_per_day", "ratio", "share_of_increase", "p_value"]
-    opened = tickets[Col.OPENED]
-    now = opened.max()
-    recent_start = now - pd.Timedelta(days=recent_days)
-    baseline_start = max(opened.min(), recent_start - pd.Timedelta(days=baseline_days))
-    baseline_span = (recent_start - baseline_start).days
-    if baseline_span < 14:
-        return pd.DataFrame(columns=columns)
+    opened = df[d.OPENED]
+    cut = opened.max() - pd.Timedelta(days=recent)
+    start = max(opened.min(), cut - pd.Timedelta(days=baseline))
+    span = (cut - start).days
+    if span < 14:
+        return pd.DataFrame()
+    values = df[column].fillna("n/a").astype(str)
+    now = values[opened > cut].value_counts()
+    before = values[(opened > start) & (opened <= cut)].value_counts().reindex(now.index, fill_value=0)
 
-    values = tickets[column].fillna("Non renseigné").astype(str)
-    recent = values[opened > recent_start].value_counts()
-    baseline = values[(opened > baseline_start) & (opened <= recent_start)].value_counts()
-
-    rows = []
-    for value in recent.index:
-        n_recent, n_base = int(recent[value]), int(baseline.get(value, 0))
-        recent_rate, base_rate = n_recent / recent_days, n_base / baseline_span
-        rows.append(
-            {
-                column: value,
-                "recent": n_recent,
-                "baseline_per_day": base_rate,
-                "recent_per_day": recent_rate,
-                "ratio": recent_rate / base_rate if base_rate > 0 else None,
-                "delta": recent_rate - base_rate,
-                "p_value": float(stats.poisson.sf(n_recent - 1, max(base_rate * recent_days, 0.1))),
-            }
-        )
-    result = pd.DataFrame(rows)
-    rise = result["delta"].clip(lower=0).sum()
-    result["share_of_increase"] = result["delta"].clip(lower=0) / rise if rise > 0 else 0.0
-    result = result[result["recent"] >= min_recent].drop(columns="delta")
-    return result.sort_values("share_of_increase", ascending=False).reset_index(drop=True)[columns]
+    out = pd.DataFrame({"recent": now, "was_per_day": before / span, "now_per_day": now / recent})
+    out["ratio"] = out["now_per_day"] / out["was_per_day"].replace(0, np.nan)
+    rise = (out["now_per_day"] - out["was_per_day"]).clip(lower=0)
+    out["share_of_increase"] = rise / rise.sum() if rise.sum() > 0 else 0.0
+    out["p_value"] = poisson.sf(now - 1, np.maximum(out["was_per_day"] * recent, 0.1))
+    return out[out["recent"] >= min_recent].sort_values("share_of_increase", ascending=False)
 
 
-# --------------------------------------------------------------------------------------
-# Batch alerts
-# --------------------------------------------------------------------------------------
-TOPIC_COLUMNS = {Col.INCIDENT_TYPE: "incident type", Col.AFFECTED_SYSTEM: "system", Col.ROOT_CAUSE: "root cause"}
+def batch_alerts(df: pd.DataFrame) -> list[Alert]:
+    """Alerts on a batch: volume spike, sustained rise, and topics that are growing fast.
 
-
-def batch_alerts(tickets: pd.DataFrame) -> list[Alert]:
-    """Raise the alerts that apply to a batch of tickets.
-
-    * a volume spike against the recent weekly norm (robust to past spikes);
-    * a sustained rise over the last four weeks;
-    * topics (type, system, root cause) growing fast and unlikely to be noise;
-    * SLA breaches and negative tone clearly above the batch's own average.
-
-    Returns:
-        Alerts sorted from most to least severe. Empty for a batch too small to judge.
+    A topic (incident type, system or root cause) is flagged when it grew at least 1.5x, holds 15% or
+    more of the total increase, and is unlikely to be noise (p < 0.01). Batches under 30 tickets are
+    too small to judge and return nothing. Most severe first.
     """
     alerts: list[Alert] = []
-    if len(tickets) < 30:
+    if len(df) < 30:
         return alerts
 
-    weekly = volume_series(tickets, "Week")
-    full = weekly[weekly["complete"]]["tickets"].to_numpy(dtype=float)
-    if len(full) >= 6:
-        last, history = full[-1], full[-9:-1]
-        median = float(np.median(history))
-        scale = max(1.4826 * float(np.median(np.abs(history - median))), np.sqrt(max(median, 1.0)))
+    weekly = volume(df, "W")["Tickets"].to_numpy(float)
+    if len(weekly) >= 6:
+        last, past = weekly[-1], weekly[-9:-1]
+        median = np.median(past)
+        scale = max(1.4826 * np.median(np.abs(past - median)), np.sqrt(max(median, 1.0)))
         z = (last - median) / scale
         if z >= 2 and last >= 1.3 * median:
             alerts.append(
                 Alert(
-                    "critical" if z >= 3 else "warning",
-                    "VOLUME_SPIKE",
+                    "error" if z >= 3 else "warning",
                     f"Volume spike: {last:.0f} tickets last week vs {median:.0f} typical",
                     f"{z:.1f} robust standard deviations above the previous weeks.",
                 )
             )
-        recent4, before = float(np.mean(full[-4:])), full[-12:-4]
-        if len(before) >= 4 and recent4 >= 1.2 * float(np.mean(before)):
+        before = weekly[-12:-4]
+        if len(before) >= 4 and weekly[-4:].mean() >= 1.2 * before.mean():
             alerts.append(
                 Alert(
                     "warning",
-                    "SUSTAINED_RISE",
                     "Sustained rise in volume",
-                    f"{recent4:.0f} tickets/week over the last 4 weeks vs {np.mean(before):.0f} before.",
+                    f"{weekly[-4:].mean():.0f}/week over the last 4 weeks vs {before.mean():.0f} before.",
                 )
             )
 
-    for column, label in TOPIC_COLUMNS.items():
-        growth = growth_by(tickets, column)
-        hot = growth[
-            (growth["ratio"].fillna(np.inf) >= 1.5) & (growth["p_value"] < 0.01) & (growth["share_of_increase"] >= 0.15)
-        ]
-        for _, row in hot.head(1).iterrows():
+    for column, label in {d.INCIDENT_TYPE: "incident type", d.AFFECTED_SYSTEM: "system", d.ROOT_CAUSE: "root cause"}.items():
+        g = growth(df, column)
+        if g.empty:
+            continue
+        hot = g[(g["ratio"].fillna(np.inf) >= 1.5) & (g["p_value"] < 0.01) & (g["share_of_increase"] >= 0.15)]
+        for name, row in hot.head(1).iterrows():
             ratio = "new" if pd.isna(row["ratio"]) else f"x{row['ratio']:.1f}"
             alerts.append(
                 Alert(
-                    "critical" if row["share_of_increase"] >= 0.4 else "warning",
-                    "GROWING_TOPIC",
-                    f"Growing {label}: {row[column]} ({ratio})",
-                    f"{int(row['recent'])} tickets in the last 28 days, "
-                    f"{row['share_of_increase']:.0%} of the total increase.",
+                    "error" if row["share_of_increase"] >= 0.4 else "warning",
+                    f"Growing {label}: {name} ({ratio})",
+                    f"{row['recent']:.0f} tickets in the last 28 days, {row['share_of_increase']:.0%} of the total increase.",
                 )
             )
-
-    alerts += _drift_alert(tickets, "SLA_DRIFT", "SLA breaches", _breach_share)
-    alerts += _drift_alert(tickets, "TONE_DRIFT", "Negative tone", _negative_share)
-    return sorted(alerts, key=lambda a: LEVEL_ORDER[a.level])
+    return sorted(alerts, key=lambda a: _SEVERITY[a.level])
 
 
-def _breach_share(frame: pd.DataFrame) -> tuple[float, int]:
-    done = frame[frame[Col.SLA].isin(["Respecté", "Dépassé"])]
-    return (float((done[Col.SLA] == "Dépassé").mean()) if len(done) else 0.0), len(done)
+# --- one new ticket ---------------------------------------------------------------------
+CONTEXT = [d.SERVICE, d.GROUP, d.INCIDENT_TYPE, d.AFFECTED_SYSTEM, d.SITE]  # categories blended into the similarity
 
 
-def _negative_share(frame: pd.DataFrame) -> tuple[float, int]:
-    tones = frame[Col.TONE].dropna()
-    return (float(tones.isin(NEGATIVE_TONES).mean()) if len(tones) else 0.0), len(tones)
+def nearest(
+    df: pd.DataFrame, vectors: np.ndarray, query: np.ndarray, context: dict[str, str], k: int = 30, text_weight: float = 0.7
+) -> pd.DataFrame:
+    """The ``k`` past tickets closest to a new one (a plain k-NN, no index needed).
+
+    ``similarity = text_weight x cosine(embeddings) + (1 - text_weight) x share of matching categories``.
+    Both terms are in [0, 1], so a score reads directly: 0.8 means close wording and mostly the same
+    context. Ties go to the most recent ticket.
+
+    Args:
+        df: The history; ``vectors[i]`` must be the embedding of ``df.iloc[i]``.
+        vectors: ``(len(df), dimension)`` embeddings of the history.
+        query: Embedding of the new ticket.
+        context: Category values of the new ticket (form plus LLM fields), keyed by column name.
+
+    Returns:
+        ``df`` rows, best first, with a ``Similarity`` column.
+    """
+
+    def unit(v: np.ndarray) -> np.ndarray:
+        return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-9)
+
+    text = np.clip(unit(np.asarray(vectors, float)) @ unit(np.asarray(query, float)), 0, 1)
+    matches = [(df[c].astype(str) == str(context[c])).to_numpy() for c in CONTEXT if context.get(c)]
+    category = np.sum(matches, axis=0) / len(CONTEXT) if matches else np.zeros(len(df))
+    score = text_weight * text + (1 - text_weight) * category
+    order = np.lexsort((-df[d.OPENED].astype("int64").to_numpy(), -score))[:k]
+    return df.iloc[order].assign(Similarity=score[order])
 
 
-def _drift_alert(
-    tickets: pd.DataFrame, code: str, label: str, share: Callable[[pd.DataFrame], tuple[float, int]]
-) -> list[Alert]:
-    """Alert when the last 28 days of a rate are well above the rest of the batch."""
-    cutoff = tickets[Col.OPENED].max() - pd.Timedelta(days=28)
-    recent, earlier = tickets[tickets[Col.OPENED] > cutoff], tickets[tickets[Col.OPENED] <= cutoff]
-    (recent_rate, n_recent), (earlier_rate, n_earlier) = share(recent), share(earlier)
-    if n_recent >= 30 and n_earlier >= 30 and recent_rate >= earlier_rate + 0.08 and recent_rate >= 1.3 * earlier_rate:
-        return [
+def ticket_alerts(ticket: dict[str, str], fields: dict[str, str], similar: pd.DataFrame, now: pd.Timestamp) -> list[Alert]:
+    """Alerts on a new ticket, from the form, the LLM fields and the similar tickets. Most severe first.
+
+    They are plain rules, so each one can be read and tuned here. ``similar`` is the output of
+    :func:`nearest` (empty is fine) and ``now`` is the date of the latest ticket in the history.
+    """
+    alerts: list[Alert] = []
+    top = d.LEVELS[-1]
+    if ticket.get(d.URGENCY) == top and ticket.get(d.IMPACT) == top:
+        alerts.append(Alert("error", "Possible major incident", "Urgency and impact are both at the highest level."))
+    if fields.get(d.INCIDENT_TYPE) == d.SECURITY:
+        alerts.append(Alert("error", "Security-related ticket", "Route it to the security team."))
+    if fields.get(d.SCOPE) in d.WIDE_SCOPES:
+        alerts.append(Alert("warning", f"Wide impact: {fields[d.SCOPE]}", "The text suggests many users are affected."))
+    if fields.get(d.TONE) in d.NEGATIVE_TONES:
+        alerts.append(
             Alert(
                 "warning",
-                code,
-                f"{label} rising: {recent_rate:.0%} vs {earlier_rate:.0%} before",
-                "Last 28 days compared with the rest of the selected period.",
+                f"Escalation risk: tone is {str(fields[d.TONE]).lower()}",
+                "Consider a proactive call-back before the SLA expires.",
             )
-        ]
-    return []
+        )
+
+    if len(similar):
+        close = similar[(similar["Similarity"] >= 0.6) & (similar[d.OPENED] >= now - pd.Timedelta(days=14))]
+        if len(close) >= 5:
+            alerts.append(
+                Alert(
+                    "error" if len(close) >= 10 else "warning",
+                    f"Emerging pattern: {len(close)} similar tickets in 14 days",
+                    "Several recent tickets describe the same problem: it may be one incident, not many.",
+                )
+            )
+        head = similar.head(10)
+        reopened, missed = head[d.REOPENED].mean(), (head[d.SLA] == d.SLA_BREACHED).mean()
+        if reopened >= 0.5 or missed >= 0.4:
+            alerts.append(
+                Alert(
+                    "warning",
+                    "Similar tickets were hard to resolve",
+                    f"Among the 10 closest: {missed:.0%} missed their SLA, {reopened:.1f} reopenings on average.",
+                )
+            )
+    return sorted(alerts, key=lambda a: _SEVERITY[a.level])
