@@ -1,0 +1,9 @@
+[theme]
+# Same theme as the main ITSM app (Thales brand colours, taken from the logo SVG
+# on thalesgroup.com): dark navy text, cyan accent.
+base = "light"
+primaryColor = "#5EBFD4"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F0F4F8"
+textColor = "#2C2F73"
+font = "sans serif"
